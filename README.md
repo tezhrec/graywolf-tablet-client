@@ -1,95 +1,154 @@
-# Graywolf 7" Tablet Web Messaging Client & Beacon Trigger
+# Graywolf APRS Tablet Terminal & OTA Radar
 
-A touch-first, tactical web client engineered specifically for **7" tablet screens** (1024×600, 1280×800, 800×480) to interface directly with the [Graywolf APRS](https://chrissnell.com/software/graywolf/api.html) daemon.
+A tactical, touch-first web messaging terminal and live situational awareness client designed to interface with the [Graywolf APRS](https://chrissnell.com/software/graywolf/api.html) daemon and the [APRS OTA](https://aprsota.org) On-The-Air activation network.
 
-Designed for vehicle dashes, radio Go-Kits, emcomm field stations, and Raspberry Pi touchscreen setups.
+Optimized for **7" field tablets** (1024×600, 1280×800, 800×480), **smartphones**, **iPads**, and **widescreen laptops/desktops** in radio Go-Kits, vehicle consoles, emergency management stations, and field operations.
 
 ---
 
 ## Key Features
 
-1. **Optimized for 7" Tablet Screens**:
-   - **Tactical Dark UI**: High-contrast, night-vision-friendly dark theme (`#080c14` background with sky blue and amber accents).
-   - **Touch Hitboxes**: All action buttons, chips, and toggles are sized ≥ 46–48px for easy finger tapping even with gloves or in moving vehicles.
-   - **Dual-Pane Layout**: Landscape split-screen with quick-scrolling conversation list (left) and active thread feed (right). Gracefully collapses to a slide-out drawer on portrait or narrow screens.
-   - **APRS Character Meter**: Live character countdown with visual warnings when exceeding standard 67-character limits up to 200 characters.
-   - **Canned Responses Bar**: One-tap quick response chips (`ROGER`, `QSL`, `73`, `EN ROUTE`, `AT LOCATION`, `STANDBY`, `YES`, `NO`, `SAY AGAIN?`).
-   - **Real-Time Updates**: Listens to Server-Sent Events (SSE) on `/api/messages/events` for instant notification of incoming APRS frames and delivery ACKs.
-   - **Audio & Haptic Feedback**: Dual-tone synthesized audio beeps and vibration feedback on message transmit, incoming message, and beacon transmission.
+### 1. Two-Way APRS Messaging
+* **Direct Messages & Tactical Nets**: Full conversation history, unread counters, station callsign resolution, and delivery ACK tracking.
+* **Real-Time Frame Stream**: Connects to Graywolf's Server-Sent Events (SSE) `/api/messages/events` and internal fast changelog for instant message and ACK updates.
+* **APRS Character Meter**: Real-time counter monitoring the 67-character APRS single-frame standard with visual warning cues up to 200 characters.
+* **Audio & Haptic Feedback**: Synthesized audio chirps and touch vibration feedback on transmit and receive.
 
-2. **Manual Beacon Trigger (`POST /api/beacons/{id}/send`)**:
-   - **Dedicated Header Button**: A prominent `[📡 BEACON NOW]` button is always visible in the top tactical bar.
-   - **Safety Cooldown Lockout**: Configurable cooldown period (3s to 60s, default 5s) preventing accidental rapid double-keying on RF channels.
-   - **Preconfigured Beacon Selector**: Tap the gear icon next to the beacon button to choose which configured beacon (from `GET /api/beacons`) is bound to the quick trigger.
-   - **Manual Beacon Modal**: Lists all configured beacons with their coordinates, channels, comments, and individual "TX NOW" buttons.
+### 2. Tactical Canned Response Bar
+* **Cumulative Sentence Building**: Tapping quick chips accumulates into the chat prompt with proper spacing, allowing you to quickly construct full transmissions:
+  * `[QSL]`, `[73]`, `[Thx 4 the contact]`, `[from Pittsburgh]`, `[QRT]`, `[HOST]`, `[PING]`, `[CQ]`.
+* Example: Tapping `[Thx 4 the contact]` followed by `[from Pittsburgh]` and `[73]` builds:
+  `"Thx 4 the contact from Pittsburgh 73"`.
 
-3. **Zero-Dependency Architecture**:
-   - Native Node.js HTTP server (`server.mjs`) with zero external `npm` dependencies.
-   - Transparent reverse-proxy forwarding `/api/*` to the Graywolf daemon, handling cookies and streaming SSE without CORS issues.
-   - Built-in **Mock Simulator Mode** for offline demonstration, interface testing, and development without an active radio TNC.
+### 3. Manual Quick Beacon Trigger
+* **Instant RF Transmission**: Dedicated `[📡 BEACON NOW]` button in the top tactical bar triggers your configured beacon via Graywolf's `POST /api/beacons/{id}/send`.
+* **RF Safety Cooldown Lockout**: Configurable cooldown period (3s to 60s, default 5s) preventing accidental rapid double-keying on RF channels.
+* **Beacon Selector**: Easily select which configured beacon (from `GET /api/beacons`) is bound to the top quick-trigger button, or inspect beacon coordinates and channels in the configuration modal.
+
+### 4. APRS OTA Live Spots & Radar (Chaser Mode)
+* **Real-Time Activations**: Pulls active POTA (Parks on the Air) and SOTA (Summits on the Air) activations from `https://aprsota.org/api/v1/now`.
+* **Polite 60-Second In-Memory Caching**: Respects APRS OTA API rate limits with automatic `ETag` and `304 Not Modified` revalidation.
+* **Beacon-Based Distance & Bearing**: Dynamically reads your station's GPS latitude and longitude from your active Graywolf beacon configuration to compute great-circle distance (miles) and 16-point cardinal compass bearings (e.g. `24 mi · SE (135°)`).
+* **1-Tap Chase**: Tapping `[⚡ 1-TAP CHASE]` on any active activator:
+  1. Opens or switches to the conversation thread with the **`APRSOTA`** bot (or `OTA`).
+  2. Pre-populates the prompt with `@<CALLSIGN> `.
+  3. On phones and tablets, automatically slides the drawer shut and focuses the input, ready for you to add your report or tap canned chips and transmit over RF.
+
+### 5. Cross-Platform Responsive Design
+* **Smartphones (<640px)**: Compact top-bar badge (`🛰️ 5`), full-screen slide-out drawer with segmented `[💬 CHATS]` / `[🛰️ SPOTS]` thumb tabs, and automatic auto-collapse on chase.
+* **7" Field Tablets & iPads**: High-contrast, night-vision-friendly dark theme (`#080c14`), touch hitboxes ≥ 46–48px for easy finger tapping with gloves or in moving vehicles.
+* **Laptops & Desktops (≥1200px)**: 3-column console layout featuring a collapsible right-hand Live Radar panel to monitor spots alongside your active conversation and message feed.
+
+### 6. Zero External Dependencies
+* Pure Node.js standard library (`http`, `https`, `fs`, `path`) without any external `npm` dependencies.
+* Reverse-proxies `/api/*` to the Graywolf daemon, handles cookie sessions without CORS issues, and proxies `/api/ota/*` to `aprsota.org`.
+* Built-in **Simulated Mock Mode** for offline demonstration and testing without an active radio TNC or internet connection.
 
 ---
 
 ## Quick Start
 
-### 1. Run in Mock / Field Demo Mode
-Simulates a live Graywolf daemon with realistic APRS conversations, automated ACKs, and beacon transmissions:
+### Prerequisites
+* [Node.js](https://nodejs.org) v18.0.0 or higher.
+
+### 1. Run Connected to a Live Graywolf Daemon
+Pass your Graywolf server IP/host directly on the command line or via environment variable:
 
 ```bash
-cd graywolf-tablet-client
-node server.mjs --mock --port 3000
-```
-Open your browser at `http://localhost:3000`.
-
-### 2. Connect to a Live Graywolf Daemon
-You can pass your Graywolf server IP/host directly on the command line or via `GRAYWOLF_URL`:
-
-```bash
-cd graywolf-tablet-client
-
-# Option A: Direct positional argument (IP:PORT)
+# Direct positional argument (IP:PORT)
 node server.mjs 10.0.0.122:8080 --port 3000
 
-# Option B: Named flag
+# Or using named flag
 node server.mjs --target http://10.0.0.122:8080 --port 3000
 
-# Option C: Environment variable
+# Or via environment variable
 GRAYWOLF_URL="http://10.0.0.122:8080" PORT=3000 node server.mjs
 ```
 
+Open your browser at `http://localhost:3000` (or `http://<device-ip>:3000` from your phone/tablet on your local LAN).
+
 > [!NOTE]
-> **Authentication Required on Live Daemons**:
-> Graywolf protects all station endpoints with session authentication (`POST /api/auth/login`). When connecting to your live server, the web client will automatically detect authentication status and display a **[🔒 LOG IN]** prompt. Enter your Graywolf username and password to unlock station messaging, conversation history, and beacon triggers. You can also view or switch the target server IP anytime from the in-app Settings dialog (⚙️).
+> **Station Authentication**:
+> Graywolf protects station endpoints with session authentication (`POST /api/auth/login`). When connecting to a live server, the web client will detect authentication status and display a **[🔒 LOG IN]** prompt. Enter your Graywolf username and password to unlock messaging and beacon controls.
+
+### 2. Run in Offline / Simulated Mock Mode
+Simulates a live Graywolf station with realistic packet counters, incoming APRS threads, automated ACKs, and local PA/Pittsburgh POTA/SOTA spots:
+
+```bash
+node server.mjs --mock --port 3000
+```
 
 ---
 
-## Graywolf API Mapping
+## Configuration & APRS OTA API
 
-| Feature | HTTP Method | Endpoint | Description |
-|---|---|---|---|
-| **Station Info** | `GET` | `/api/station/config` | Retrieves station callsign |
-| **System Status** | `GET` | `/api/status` | Runtime status, packet counters |
-| **Beacons List** | `GET` | `/api/beacons` | List all configured APRS beacons |
-| **Trigger Beacon** | `POST` | `/api/beacons/{id}/send` | **Manually transmits selected beacon** |
-| **Conversations** | `GET` | `/api/messages/conversations` | List DM and tactical threads |
-| **Thread Messages** | `GET` | `/api/messages?thread_kind=...&thread_key=...` | Retrieve messages for a thread |
-| **Send Message** | `POST` | `/api/messages` | Transmit DM or tactical message |
-| **Real-Time Stream** | `GET` | `/api/messages/events` | Server-Sent Events (SSE) stream |
-| **Mark Read** | `POST` | `/api/messages/{id}/read` | Mark message as read |
-| **Resend Message** | `POST` | `/api/messages/{id}/resend` | Re-queue message transmission |
-| **Delete Thread** | `DELETE` | `/api/messages/threads/{kind}/{key}` | Remove conversation history |
-| **Authentication** | `POST` | `/api/auth/login` | Session login (`graywolf_session`) |
+1. Open the in-app **Settings dialog (⚙️)** in the top bar.
+2. Scroll to **🛰️ APRS OTA Integration**:
+   * **Bearer Token**: Enter your free non-commercial API token from Jared K0TFU (see [aprsota.org/handbook/api](https://aprsota.org/handbook/api)). If left blank, simulated mock spots are used for preview.
+   * **Bot Callsign Target**: Set to `APRSOTA` (default) or regional gateway (e.g. `OTA`).
+3. Settings are saved locally to `config.json` on the server and are automatically excluded from git tracking.
+
+A template configuration file is provided in [`config.example.json`](config.example.json):
+```json
+{
+  "aprsota_token": "aprsota_example_token_here_32_chars",
+  "bot_callsign": "APRSOTA"
+}
+```
 
 ---
 
-## Deploying on a 7" Raspberry Pi (Kiosk Mode)
+## Source Code Management & GitHub
 
-### 1. Install as a systemd service
+To link this repository to your personal GitHub account:
+
+1. Create a new repository on [GitHub](https://github.com/new) (e.g. `graywolf-tablet-client`), either **Private** or **Public**.
+2. Add your GitHub remote and push:
+   ```bash
+   git remote add origin https://github.com/<your-username>/graywolf-tablet-client.git
+   git branch -M main
+   git push -u origin main --tags
+   ```
+
+### Rolling Back to Previous Releases
+A baseline release tag is preserved:
+```bash
+# Return to original pre-APRSOTA baseline
+git checkout v1.0.0-stable
+```
+
+---
+
+## Automated Verification & Testing
+
+Run the comprehensive 12-suite end-to-end test suite:
+
+```bash
+node test-e2e.mjs
+```
+
+Tests verify:
+* Positional argument parsing and `/client/info`
+* Station configuration and beacon retrieval
+* Manual beacon triggering (`POST /api/beacons/{id}/send`)
+* Conversation listing and thread retrieval
+* Message transmission
+* Static asset delivery and APRS OTA DOM markup
+* Live APRS OTA spots feed (`/api/ota/now`)
+* Polite 60-second upstream caching (`X-Cache: HIT`)
+* Dynamic configuration updates (`POST /client/ota-config`)
+* Great-circle Haversine distance and forward azimuth bearing math
+
+---
+
+## Deploying on a Raspberry Pi (Kiosk Mode)
+
+### 1. Install as a Systemd Service
 Create `/etc/systemd/system/graywolf-tablet.service`:
 
 ```ini
 [Unit]
-Description=Graywolf 7" Tablet Web Client
+Description=Graywolf APRS Tablet Web Client
 After=network.target
 
 [Service]
@@ -112,8 +171,15 @@ sudo systemctl enable --now graywolf-tablet.service
 ```
 
 ### 2. Autostart Chromium in Fullscreen Kiosk Mode
-In your desktop autostart configuration (`~/.config/wayfire.ini` on Wayland, or `~/.config/lxsession/LXDE-pi/autostart` on X11):
+In your desktop autostart configuration (`~/.config/wayfire.ini` on Wayland or `~/.config/lxsession/LXDE-pi/autostart` on X11):
 
 ```bash
 chromium-browser --noerrdialogs --disable-infobars --kiosk --incognito http://localhost:3000
 ```
+
+---
+
+## Acknowledgments & Credits
+
+* **[Graywolf APRS](https://chrissnell.com/software/graywolf/api.html)** by Chris Snell.
+* **[APRS OTA](https://aprsota.org)** by Jared K0TFU.
