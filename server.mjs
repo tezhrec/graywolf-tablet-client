@@ -1,0 +1,735 @@
+import http from 'node:http';
+import https from 'node:https';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function getArgValue(flagNames) {
+  for (const flag of flagNames) {
+    const idx = process.argv.indexOf(flag);
+    if (idx !== -1 && process.argv[idx + 1] && !process.argv[idx + 1].startsWith('-')) {
+      return process.argv[idx + 1];
+    }
+  }
+  return null;
+}
+
+function findPositionalServerArg() {
+  for (let i = 2; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if (arg.startsWith('-')) {
+      if (arg === '--port' || arg === '-p' || arg === '--graywolf' || arg === '--url' || arg === '--target' || arg === '-s') {
+        i++;
+      }
+      continue;
+    }
+    if (arg.includes('.') || arg.includes(':') || arg.startsWith('http')) {
+      return arg;
+    }
+  }
+  return null;
+}
+
+function normalizeUrl(url) {
+  if (!url) return 'http://127.0.0.1:8080';
+  url = url.trim();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `http://${url}`;
+  }
+  return url.replace(/\/+$/, '');
+}
+
+const portVal = getArgValue(['--port', '-p']);
+const PORT = parseInt(portVal || process.env.PORT || '3000', 10);
+
+const cliTarget = getArgValue(['--graywolf', '--target', '--url', '-s']) || findPositionalServerArg();
+let currentGraywolfUrl = normalizeUrl(cliTarget || process.env.GRAYWOLF_URL || 'http://127.0.0.1:8080');
+const isMock = process.argv.includes('--mock') || process.env.MOCK === 'true';
+
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+};
+
+// --- Mock Data Store (for field testing & offline preview) ---
+const mockStore = {
+  station: {
+    callsign: 'W1AW-7',
+    disabled: []
+  },
+  status: {
+    status: 'ok',
+    uptime_seconds: 14520,
+    rx_packets: 342,
+    tx_packets: 88,
+    version: '1.0.4-gw'
+  },
+  beacons: [
+    {
+      id: 1,
+      callsign: 'W1AW-7',
+      comment: 'Graywolf 7" Tablet Node [433.050/144.390]',
+      channel: 1,
+      interval: 600,
+      enabled: true,
+      destination: 'APGW01',
+      latitude: 41.7148,
+      longitude: -72.7272,
+      messaging: true,
+      use_gps: false
+    },
+    {
+      id: 2,
+      callsign: 'W1AW-7',
+      comment: 'SAR Mobile Command / Field Ops',
+      channel: 1,
+      interval: 300,
+      enabled: true,
+      destination: 'APGW01',
+      latitude: 41.7155,
+      longitude: -72.7280,
+      messaging: true,
+      use_gps: false
+    },
+    {
+      id: 3,
+      callsign: 'W1AW-7',
+      comment: 'Emergency Beacon - Grid FN31',
+      channel: 2,
+      interval: 120,
+      enabled: false,
+      destination: 'APGW01',
+      latitude: 41.7148,
+      longitude: -72.7272,
+      messaging: false,
+      use_gps: false
+    }
+  ],
+  conversations: [
+    {
+      thread_key: 'N0CALL-9',
+      thread_kind: 'dm',
+      alias: 'Field Unit Alpha',
+      last_snippet: 'Copy that. Arrived at checkpoint Bravo.',
+      last_sender_call: 'N0CALL-9',
+      last_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+      unread_count: 1,
+      total_count: 5,
+      participant_count: 1,
+      archived: false
+    },
+    {
+      thread_key: 'SAR-NET',
+      thread_kind: 'tactical',
+      alias: 'Search & Rescue Ops',
+      last_snippet: 'All teams check in on 146.520.',
+      last_sender_call: 'K3SAR',
+      last_at: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
+      unread_count: 0,
+      total_count: 12,
+      participant_count: 4,
+      archived: false
+    },
+    {
+      thread_key: 'WX-BOT',
+      thread_kind: 'dm',
+      alias: 'Weather Advisory',
+      last_snippet: 'WX 68F Baro 30.14 steady Wind NW 6mph',
+      last_sender_call: 'WX-BOT',
+      last_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+      unread_count: 0,
+      total_count: 3,
+      participant_count: 1,
+      archived: false
+    }
+  ],
+  messages: [
+    {
+      id: 101,
+      thread_key: 'N0CALL-9',
+      thread_kind: 'dm',
+      from_call: 'W1AW-7',
+      to_call: 'N0CALL-9',
+      direction: 'out',
+      text: 'Unit Alpha, what is your current GPS location?',
+      sent_at: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+      acked_at: new Date(Date.now() - 11.9 * 60 * 1000).toISOString(),
+      status: 'acked',
+      channel: 1,
+      source: 'rf',
+      attempts: 1,
+      unread: false
+    },
+    {
+      id: 102,
+      thread_key: 'N0CALL-9',
+      thread_kind: 'dm',
+      from_call: 'N0CALL-9',
+      to_call: 'W1AW-7',
+      direction: 'in',
+      text: 'En route to ridge line trail. 1.2mi out.',
+      received_at: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+      status: 'received',
+      channel: 1,
+      source: 'rf',
+      unread: false
+    },
+    {
+      id: 103,
+      thread_key: 'N0CALL-9',
+      thread_kind: 'dm',
+      from_call: 'W1AW-7',
+      to_call: 'N0CALL-9',
+      direction: 'out',
+      text: 'ROGER. Maintain radio silence until CP Bravo.',
+      sent_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      acked_at: new Date(Date.now() - 4.9 * 60 * 1000).toISOString(),
+      status: 'acked',
+      channel: 1,
+      source: 'rf',
+      attempts: 1,
+      unread: false
+    },
+    {
+      id: 104,
+      thread_key: 'N0CALL-9',
+      thread_kind: 'dm',
+      from_call: 'N0CALL-9',
+      to_call: 'W1AW-7',
+      direction: 'in',
+      text: 'Copy that. Arrived at checkpoint Bravo.',
+      received_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+      status: 'received',
+      channel: 1,
+      source: 'rf',
+      unread: true
+    },
+    {
+      id: 201,
+      thread_key: 'SAR-NET',
+      thread_kind: 'tactical',
+      from_call: 'K3SAR',
+      to_call: 'SAR-NET',
+      direction: 'in',
+      text: 'Tactical net open. Incident command online.',
+      received_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      status: 'received',
+      channel: 1,
+      source: 'rf',
+      unread: false
+    },
+    {
+      id: 202,
+      thread_key: 'SAR-NET',
+      thread_kind: 'tactical',
+      from_call: 'W1AW-7',
+      to_call: 'SAR-NET',
+      direction: 'out',
+      text: 'W1AW-7 standing by with tablet client.',
+      sent_at: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
+      status: 'sent',
+      channel: 1,
+      source: 'rf',
+      attempts: 1,
+      unread: false
+    },
+    {
+      id: 203,
+      thread_key: 'SAR-NET',
+      thread_kind: 'tactical',
+      from_call: 'K3SAR',
+      to_call: 'SAR-NET',
+      direction: 'in',
+      text: 'All teams check in on 146.520.',
+      received_at: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
+      status: 'received',
+      channel: 1,
+      source: 'rf',
+      unread: false
+    }
+  ]
+};
+
+const sseClients = new Set();
+
+function broadcastSSE(data) {
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(payload);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+// --- Body Parser Helper ---
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 1e6) {
+        req.destroy();
+        reject(new Error('Body too large'));
+      }
+    });
+    req.on('end', () => {
+      if (!body) return resolve({});
+      try {
+        resolve(JSON.parse(body));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+// --- Mock API Router ---
+async function handleMockApi(req, res, pathname, query) {
+  res.setHeader('Content-Type', 'application/json');
+
+  // Station Config
+  if (req.method === 'GET' && pathname === '/api/station/config') {
+    res.writeHead(200);
+    return res.end(JSON.stringify(mockStore.station));
+  }
+
+  // System Status
+  if (req.method === 'GET' && pathname === '/api/status') {
+    res.writeHead(200);
+    return res.end(JSON.stringify(mockStore.status));
+  }
+
+  // Auth Login / Logout
+  if (req.method === 'POST' && pathname === '/api/auth/login') {
+    res.setHeader('Set-Cookie', 'graywolf_session=mock-valid-session; Path=/; HttpOnly; SameSite=Lax');
+    res.writeHead(200);
+    return res.end(JSON.stringify({ status: 'ok' }));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/auth/logout') {
+    res.setHeader('Set-Cookie', 'graywolf_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+    res.writeHead(200);
+    return res.end(JSON.stringify({ status: 'ok' }));
+  }
+
+  // Beacons List
+  if (req.method === 'GET' && pathname === '/api/beacons') {
+    res.writeHead(200);
+    return res.end(JSON.stringify(mockStore.beacons));
+  }
+
+  // Manual Beacon Trigger: POST /api/beacons/{id}/send
+  const beaconSendMatch = pathname.match(/^\/api\/beacons\/(\d+)\/send$/);
+  if (req.method === 'POST' && beaconSendMatch) {
+    const beaconId = parseInt(beaconSendMatch[1], 10);
+    const beacon = mockStore.beacons.find(b => b.id === beaconId);
+    if (!beacon) {
+      res.writeHead(404);
+      return res.end(JSON.stringify({ error: `Beacon ${beaconId} not found` }));
+    }
+
+    mockStore.status.tx_packets += 1;
+    console.log(`[MOCK BEACON TRIGGERED] Beacon #${beacon.id} (${beacon.callsign}) transmitted: "${beacon.comment}"`);
+
+    // Broadcast SSE beacon event
+    broadcastSSE({
+      type: 'beacon_sent',
+      beacon_id: beacon.id,
+      callsign: beacon.callsign,
+      timestamp: new Date().toISOString()
+    });
+
+    res.writeHead(200);
+    return res.end(JSON.stringify({ status: 'sent' }));
+  }
+
+  // Conversations List
+  if (req.method === 'GET' && pathname === '/api/messages/conversations') {
+    res.writeHead(200);
+    return res.end(JSON.stringify(mockStore.conversations));
+  }
+
+  // Message Events (SSE)
+  if (req.method === 'GET' && pathname === '/api/messages/events') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+    res.write('retry: 5000\n\n');
+    res.write(': connected to mock event stream\n\n');
+
+    sseClients.add(res);
+
+    req.on('close', () => {
+      sseClients.delete(res);
+    });
+    return;
+  }
+
+  // List Messages: GET /api/messages?thread_kind=...&thread_key=...
+  if (req.method === 'GET' && pathname === '/api/messages') {
+    const threadKind = query.get('thread_kind');
+    const threadKey = query.get('thread_key');
+
+    let filtered = mockStore.messages;
+    if (threadKind && threadKey) {
+      filtered = filtered.filter(m => m.thread_kind === threadKind && m.thread_key.toUpperCase() === threadKey.toUpperCase());
+    }
+
+    const changes = filtered.map(msg => ({
+      id: msg.id,
+      kind: msg.kind || 'text',
+      message: msg
+    }));
+
+    res.writeHead(200);
+    return res.end(JSON.stringify({
+      changes,
+      cursor: ''
+    }));
+  }
+
+  // Send Message: POST /api/messages
+  if (req.method === 'POST' && pathname === '/api/messages') {
+    const payload = await parseJsonBody(req);
+    if (!payload.to || !payload.text) {
+      res.writeHead(400);
+      return res.end(JSON.stringify({ error: 'Missing "to" or "text"' }));
+    }
+
+    const toCall = payload.to.trim().toUpperCase();
+    const isTactical = toCall.includes('SAR') || toCall.includes('NET') || payload.kind === 'invite';
+    const threadKind = isTactical ? 'tactical' : 'dm';
+
+    const newMsg = {
+      id: Date.now(),
+      thread_key: toCall,
+      thread_kind: threadKind,
+      from_call: mockStore.station.callsign,
+      to_call: toCall,
+      direction: 'out',
+      text: payload.text,
+      sent_at: new Date().toISOString(),
+      channel: payload.channel || 1,
+      source: payload.prefer_is ? 'is' : 'rf',
+      status: 'pending',
+      attempts: 1,
+      unread: false,
+      extended: payload.text.length > 67,
+      client_id: payload.client_id
+    };
+
+    mockStore.messages.push(newMsg);
+    mockStore.status.tx_packets += 1;
+
+    // Update or create conversation summary
+    let conv = mockStore.conversations.find(c => c.thread_key.toUpperCase() === toCall);
+    if (!conv) {
+      conv = {
+        thread_key: toCall,
+        thread_kind: threadKind,
+        alias: '',
+        last_snippet: payload.text,
+        last_sender_call: mockStore.station.callsign,
+        last_at: newMsg.sent_at,
+        unread_count: 0,
+        total_count: 1,
+        participant_count: 1,
+        archived: false
+      };
+      mockStore.conversations.unshift(conv);
+    } else {
+      conv.last_snippet = payload.text;
+      conv.last_sender_call = mockStore.station.callsign;
+      conv.last_at = newMsg.sent_at;
+      conv.total_count += 1;
+    }
+
+    // Broadcast SSE change
+    broadcastSSE({
+      id: newMsg.id,
+      kind: 'out',
+      message: newMsg
+    });
+
+    // Simulate RF transmission and ACK delivery after 1.5s
+    setTimeout(() => {
+      newMsg.status = 'acked';
+      newMsg.acked_at = new Date().toISOString();
+      broadcastSSE({
+        id: newMsg.id,
+        kind: 'ack',
+        message: newMsg
+      });
+    }, 1500);
+
+    res.writeHead(202);
+    return res.end(JSON.stringify(newMsg));
+  }
+
+  // Mark Message Read: POST /api/messages/{id}/read
+  const readMatch = pathname.match(/^\/api\/messages\/(\d+)\/read$/);
+  if (req.method === 'POST' && readMatch) {
+    const id = parseInt(readMatch[1], 10);
+    const msg = mockStore.messages.find(m => m.id === id);
+    if (msg) {
+      msg.unread = false;
+      const conv = mockStore.conversations.find(c => c.thread_key === msg.thread_key);
+      if (conv && conv.unread_count > 0) conv.unread_count -= 1;
+    }
+    res.writeHead(204);
+    return res.end();
+  }
+
+  // Resend Message: POST /api/messages/{id}/resend
+  const resendMatch = pathname.match(/^\/api\/messages\/(\d+)\/resend$/);
+  if (req.method === 'POST' && resendMatch) {
+    const id = parseInt(resendMatch[1], 10);
+    const msg = mockStore.messages.find(m => m.id === id);
+    if (!msg) {
+      res.writeHead(404);
+      return res.end(JSON.stringify({ error: 'Message not found' }));
+    }
+    msg.attempts = (msg.attempts || 1) + 1;
+    msg.status = 'sent';
+    res.writeHead(202);
+    return res.end(JSON.stringify(msg));
+  }
+
+  // Delete Thread: DELETE /api/messages/threads/{kind}/{key}
+  const deleteThreadMatch = pathname.match(/^\/api\/messages\/threads\/([^/]+)\/([^/]+)$/);
+  if (req.method === 'DELETE' && deleteThreadMatch) {
+    const kind = decodeURIComponent(deleteThreadMatch[1]);
+    const key = decodeURIComponent(deleteThreadMatch[2]).toUpperCase();
+    mockStore.conversations = mockStore.conversations.filter(c => !(c.thread_kind === kind && c.thread_key.toUpperCase() === key));
+    mockStore.messages = mockStore.messages.filter(m => !(m.thread_kind === kind && m.thread_key.toUpperCase() === key));
+    res.writeHead(204);
+    return res.end();
+  }
+
+  res.writeHead(404);
+  res.end(JSON.stringify({ error: `Not found: ${pathname}` }));
+}
+
+// --- Live Reverse Proxy to Graywolf Daemon ---
+function proxyToGraywolf(req, res, targetUrl) {
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ error: `Invalid Graywolf URL: ${targetUrl}` }));
+  }
+
+  const isHttps = parsedTarget.protocol === 'https:';
+  const clientMod = isHttps ? https : http;
+
+  const options = {
+    hostname: parsedTarget.hostname,
+    port: parsedTarget.port || (isHttps ? 443 : 80),
+    path: req.url,
+    method: req.method,
+    headers: {
+      ...req.headers,
+      host: parsedTarget.host
+    }
+  };
+
+  const proxyReq = clientMod.request(options, proxyRes => {
+    const headers = { ...proxyRes.headers };
+
+    // Clean Set-Cookie: strip Domain & Secure attributes so tablet browser on HTTP accepts session cookies
+    if (headers['set-cookie']) {
+      const cookies = Array.isArray(headers['set-cookie']) ? headers['set-cookie'] : [headers['set-cookie']];
+      headers['set-cookie'] = cookies.map(cookieStr =>
+        cookieStr
+          .replace(/;\s*Domain=[^;]+/gi, '')
+          .replace(/;\s*Secure/gi, '')
+          .replace(/;\s*SameSite=[^;]+/gi, '; SameSite=Lax')
+      );
+    }
+
+    // Disable caching & proxy buffering for SSE streams
+    if (req.url.includes('/events')) {
+      delete headers['content-length'];
+      headers['cache-control'] = 'no-cache, no-transform';
+      headers['connection'] = 'keep-alive';
+      headers['x-accel-buffering'] = 'no';
+
+      if (req.socket && typeof req.socket.setNoDelay === 'function') {
+        req.socket.setNoDelay(true);
+      }
+      if (proxyReq.socket && typeof proxyReq.socket.setNoDelay === 'function') {
+        proxyReq.socket.setNoDelay(true);
+      }
+
+      res.writeHead(proxyRes.statusCode, headers);
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+
+      proxyRes.on('data', chunk => {
+        res.write(chunk);
+        if (typeof res.flush === 'function') res.flush();
+      });
+      proxyRes.on('end', () => res.end());
+      proxyRes.on('error', err => {
+        console.error('[SSE PROXY RES ERROR]', err.message);
+        res.end();
+      });
+      return;
+    }
+
+    res.writeHead(proxyRes.statusCode, headers);
+    proxyRes.pipe(res);
+  });
+
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      proxyReq.destroy();
+    }
+  });
+
+  proxyReq.on('error', err => {
+    console.error(`[PROXY ERROR] Failed to connect to Graywolf at ${targetUrl}:`, err.message);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `Could not connect to Graywolf daemon at ${targetUrl}. (${err.message})`,
+        hint: 'Check that Graywolf is running and accessible at this IP and port.'
+      }));
+    }
+  });
+
+  req.pipe(proxyReq);
+}
+
+// --- Static File Handler ---
+function serveStatic(req, res, pathname) {
+  let safePath = pathname;
+  if (safePath === '/' || safePath === '') {
+    safePath = '/index.html';
+  }
+
+  const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+
+  fs.stat(filePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      // Fallback for SPA routing if needed
+      const indexPath = path.join(PUBLIC_DIR, 'index.html');
+      fs.readFile(indexPath, (err2, indexData) => {
+        if (err2) {
+          res.writeHead(404);
+          return res.end('Not Found');
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(indexData);
+      });
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': stats.size,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+
+    fs.createReadStream(filePath).pipe(res);
+  });
+}
+
+// --- Main HTTP Server ---
+const server = http.createServer(async (req, res) => {
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = parsedUrl.pathname;
+
+  // Logging
+  const start = Date.now();
+  res.on('finish', () => {
+    const elapsed = Date.now() - start;
+    if (pathname.startsWith('/api') || res.statusCode >= 400) {
+      console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${pathname} ${res.statusCode} (${elapsed}ms)`);
+    }
+  });
+
+  // Dynamic Graywolf Target configuration: POST /client/target
+  if (req.method === 'POST' && pathname === '/client/target') {
+    try {
+      const payload = await parseJsonBody(req);
+      if (payload.target) {
+        currentGraywolfUrl = normalizeUrl(payload.target);
+        console.log(`[TARGET UPDATED] Switched Graywolf URL to: ${currentGraywolfUrl}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ status: 'ok', graywolf_url: currentGraywolfUrl }));
+      }
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  // Handle /api routes
+  if (pathname.startsWith('/api/')) {
+    if (isMock) {
+      return handleMockApi(req, res, pathname, parsedUrl.searchParams).catch(err => {
+        console.error('[MOCK ROUTE ERROR]', err);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    } else {
+      return proxyToGraywolf(req, res, currentGraywolfUrl);
+    }
+  }
+
+  // Health / Config ping
+  if (pathname === '/client/info') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      mode: isMock ? 'mock' : 'live-proxy',
+      graywolf_url: currentGraywolfUrl,
+      version: '1.0.0'
+    }));
+  }
+
+  // Static files
+  serveStatic(req, res, pathname);
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`====================================================`);
+  console.log(` Graywolf 7" Tablet Web Client`);
+  console.log(` Server running on http://0.0.0.0:${PORT}`);
+  console.log(` Mode: ${isMock ? 'SIMULATED MOCK MODE' : `LIVE PROXY -> ${currentGraywolfUrl}`}`);
+  console.log(` Target Graywolf Daemon: ${currentGraywolfUrl}`);
+  console.log(` Optimizations: 7" Landscape (1024x600) & Portrait`);
+  console.log(`====================================================`);
+});

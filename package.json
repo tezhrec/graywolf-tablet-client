@@ -1,0 +1,22 @@
+{
+  "name": "graywolf-tablet-client",
+  "version": "1.0.0",
+  "description": "7\" Tablet Web Messaging Client & Beacon Trigger for Graywolf APRS",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "mock": "node server.mjs --mock",
+    "dev": "node server.mjs --mock --port 3000"
+  },
+  "keywords": [
+    "aprs",
+    "graywolf",
+    "ham-radio",
+    "tablet",
+    "touch-ui",
+    "messaging"
+  ],
+  "author": "",
+  "license": "MIT"
+}

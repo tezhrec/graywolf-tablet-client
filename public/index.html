@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#090d16">
+  <title>Graywolf APRS - Tablet Terminal</title>
+  <link rel="stylesheet" href="style.css?v=2.0.6">
+</head>
+<body>
+  <!-- Top Tactical Bar -->
+  <header class="tactical-bar" id="tactical-bar">
+    <div class="bar-left">
+      <button id="btn-toggle-drawer" class="icon-btn drawer-toggle-btn" aria-label="Toggle Conversations">
+        <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+      </button>
+      <div class="station-identity" id="station-badge">
+        <span class="station-dot online" id="connection-dot" title="Connected"></span>
+        <span class="station-callsign" id="station-callsign">GRAYWOLF</span>
+      </div>
+      <button id="btn-login-prompt" class="btn-login-prompt hidden" title="Authentication required: tap to log in">
+        <span>🔒</span> <span>LOG IN</span>
+      </button>
+    </div>
+
+    <!-- Manual Quick Beacon Trigger Button -->
+    <div class="bar-center">
+      <div class="beacon-trigger-group">
+        <button id="btn-trigger-beacon" class="btn-beacon" title="Send preconfigured beacon now over RF">
+          <span class="beacon-flash-ring"></span>
+          <span class="beacon-icon">📡</span>
+          <span class="beacon-text">
+            <span class="beacon-action">BEACON NOW</span>
+            <span class="beacon-target" id="quick-beacon-name">Node 1</span>
+          </span>
+          <span id="beacon-cooldown-badge" class="beacon-cooldown hidden">5s</span>
+        </button>
+        <button id="btn-beacon-config" class="btn-beacon-gear" title="Select or configure preconfigured beacon">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="bar-right">
+      <button id="btn-audio-toggle" class="icon-btn" title="Toggle audio chime">
+        <span id="audio-icon">🔊</span>
+      </button>
+      <button id="btn-fullscreen-toggle" class="icon-btn" title="Toggle Fullscreen (Kiosk)">
+        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+      </button>
+      <button id="btn-settings-open" class="icon-btn" title="System Settings & Auth">
+        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Tablet Workspace -->
+  <main class="app-workspace">
+    <!-- Left Conversation Drawer -->
+    <aside class="conversation-drawer" id="conversation-drawer">
+      <div class="drawer-header">
+        <div class="search-box">
+          <input type="text" id="search-threads" placeholder="Search callsign or tactical..." autocomplete="off" autocorrect="off">
+          <span class="search-icon">🔍</span>
+        </div>
+        <button id="btn-new-chat" class="btn-primary-touch" title="Start new direct or tactical conversation">
+          <span>+</span> NEW
+        </button>
+      </div>
+
+      <!-- Filter Tabs -->
+      <div class="filter-tabs">
+        <button class="tab-btn active" data-filter="all">All (<span id="count-all">0</span>)</button>
+        <button class="tab-btn" data-filter="dm">DMs</button>
+        <button class="tab-btn" data-filter="tactical">Tactical</button>
+        <button class="tab-btn" data-filter="unread">Unread (<span id="count-unread">0</span>)</button>
+      </div>
+
+      <!-- Conversation List -->
+      <div class="conversation-list" id="conversation-list">
+        <div class="loading-state">Loading conversations...</div>
+      </div>
+    </aside>
+
+    <!-- Right Chat Workspace -->
+    <section class="chat-workspace" id="chat-workspace">
+      <!-- Empty Placeholder (when no thread selected) -->
+      <div class="chat-empty-state" id="chat-empty-state">
+        <div class="empty-art">📻</div>
+        <h2>Graywolf Messaging Terminal</h2>
+        <p>Optimized for 7" Field Tablet Operation</p>
+        <div class="empty-actions">
+          <button id="btn-empty-new-chat" class="btn-action-touch">New Direct Message</button>
+          <button id="btn-empty-trigger-beacon" class="btn-action-touch beacon-style">Send Manual Beacon</button>
+        </div>
+        <div class="status-summary-card" id="status-summary-card">
+          <div class="status-stat">
+            <span class="stat-label">STATION</span>
+            <span class="stat-value" id="summary-station">-</span>
+          </div>
+          <div class="status-stat">
+            <span class="stat-label">RX PACKETS</span>
+            <span class="stat-value" id="summary-rx">0</span>
+          </div>
+          <div class="status-stat">
+            <span class="stat-label">TX PACKETS</span>
+            <span class="stat-value" id="summary-tx">0</span>
+          </div>
+          <div class="status-stat">
+            <span class="stat-label">ACTIVE BEACON</span>
+            <span class="stat-value" id="summary-beacon">-</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Thread Panel -->
+      <div class="thread-panel hidden" id="thread-panel">
+        <!-- Thread Header -->
+        <div class="thread-header">
+          <button id="btn-back-to-drawer" class="icon-btn mobile-back-btn" title="Back to conversations">
+            <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+          </button>
+          <div class="thread-info">
+            <div class="thread-title-line">
+              <h2 id="active-thread-key">N0CALL</h2>
+              <span class="thread-kind-pill" id="active-thread-kind">DM</span>
+            </div>
+            <div class="thread-subtitle-line">
+              <span id="active-thread-alias">Field Station</span>
+              <span class="thread-status-dot"></span>
+              <span id="active-thread-participants">1 station</span>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button id="btn-resend-failed" class="icon-btn hidden" title="Resend failed messages">
+              <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+            </button>
+            <button id="btn-delete-thread" class="icon-btn delete-btn" title="Delete conversation thread">
+              <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Scrollable Message Feed -->
+        <div class="message-feed" id="message-feed">
+          <!-- Dynamically filled with message bubbles -->
+        </div>
+
+        <!-- Canned Quick Responses Bar -->
+        <div class="canned-bar" id="canned-bar">
+          <span class="canned-label">QUICK:</span>
+          <div class="canned-scroll-list" id="canned-scroll-list">
+            <button type="button" class="canned-chip" data-text="QSL">QSL</button>
+            <button type="button" class="canned-chip" data-text="73">73</button>
+            <button type="button" class="canned-chip" data-text="Thx 4 the contact">Thx 4 the contact</button>
+            <button type="button" class="canned-chip" data-text="from Pittsburgh">from Pittsburgh</button>
+            <button type="button" class="canned-chip" data-text="QRT">QRT</button>
+            <button type="button" class="canned-chip" data-text="HOST">HOST</button>
+            <button type="button" class="canned-chip" data-text="PING">PING</button>
+            <button type="button" class="canned-chip" data-text="CQ">CQ</button>
+          </div>
+        </div>
+
+        <!-- Composer -->
+        <div class="composer-container" id="composer-container">
+          <div class="composer-options">
+            <label class="toggle-control" title="Route via APRS-IS (Internet) rather than RF">
+              <input type="checkbox" id="chk-prefer-is">
+              <span class="control-label">Prefer IS</span>
+            </label>
+            <div class="path-preset-wrapper">
+              <label for="select-path" class="control-label">Path:</label>
+              <select id="select-path">
+                <option value="">Default (WIDE1-1)</option>
+                <option value="WIDE1-1,WIDE2-1">WIDE1-1,WIDE2-1</option>
+                <option value="WIDE2-2">WIDE2-2</option>
+                <option value="DIRECT">Direct (No Digis)</option>
+              </select>
+            </div>
+            <div class="char-meter" id="char-meter" title="APRS standard limit is 67 characters">
+              <span id="char-count">0</span> / 67
+            </div>
+          </div>
+
+          <form id="form-compose" class="composer-form">
+            <textarea
+              id="input-message"
+              placeholder="Type APRS message..."
+              rows="2"
+              maxlength="200"
+              autocomplete="off"
+              autocorrect="off"
+              enterkeyhint="send"
+            ></textarea>
+            <button type="submit" id="btn-send-msg" class="btn-send" title="Send APRS Message">
+              <span class="send-icon">➤</span>
+              <span class="send-text">TX</span>
+            </button>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= Modals ================= -->
+
+  <!-- Modal: Beacon Selection & Trigger Configuration -->
+  <dialog id="modal-beacons" class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📡 APRS Beacon Configuration</h3>
+        <button class="modal-close" id="btn-close-beacon-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="section-desc">
+          Select which preconfigured beacon the top <strong>[BEACON NOW]</strong> button triggers, or trigger any beacon manually.
+        </p>
+
+        <div class="beacon-list-container" id="beacon-list-container">
+          <div class="loading-state">Fetching beacons from Graywolf...</div>
+        </div>
+
+        <div class="cooldown-setting-box">
+          <label for="select-cooldown">Quick Trigger RF Cooldown Lockout:</label>
+          <select id="select-cooldown">
+            <option value="3">3 seconds</option>
+            <option value="5" selected>5 seconds (Recommended)</option>
+            <option value="10">10 seconds</option>
+            <option value="30">30 seconds</option>
+            <option value="60">60 seconds</option>
+          </select>
+          <small>Protects against accidental rapid re-keying on RF frequencies.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-cancel-beacon-modal">Close</button>
+        <button class="btn-primary" id="btn-save-beacon-pref">Save Preference</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: New Conversation -->
+  <dialog id="modal-new-chat" class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>💬 Start New APRS Conversation</h3>
+        <button class="modal-close" id="btn-close-new-chat">&times;</button>
+      </div>
+      <form id="form-new-chat" class="modal-body">
+        <div class="form-group">
+          <label for="new-recipient">Addressee / Station Callsign or Group:</label>
+          <input
+            type="text"
+            id="new-recipient"
+            placeholder="e.g. N0CALL-9 or SAR-TEAM1"
+            required
+            maxlength="9"
+            style="text-transform: uppercase;"
+            autocomplete="off"
+            autocorrect="off"
+          >
+          <div class="preset-pills">
+            <button type="button" class="pill-btn" data-preset="SAR-NET">SAR-NET</button>
+            <button type="button" class="pill-btn" data-preset="EMCOMM">EMCOMM</button>
+            <button type="button" class="pill-btn" data-preset="WX-BOT">WX-BOT</button>
+            <button type="button" class="pill-btn" data-preset="ANSRVR">ANSRVR</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="new-message-text">Initial Message (Optional):</label>
+          <textarea id="new-message-text" rows="2" placeholder="Leave blank to open empty thread..."></textarea>
+        </div>
+      </form>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" id="btn-cancel-new-chat">Cancel</button>
+        <button type="submit" form="form-new-chat" class="btn-primary">Open Conversation</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Settings & Graywolf Status -->
+  <dialog id="modal-settings" class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>⚙️ Terminal & Graywolf Status</h3>
+        <button class="modal-close" id="btn-close-settings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-section">
+          <h4>Graywolf Server Target</h4>
+          <div class="target-server-row">
+            <input type="text" id="setting-gw-target" placeholder="http://10.0.0.122:8080" autocomplete="off">
+            <button type="button" id="btn-save-target" class="btn-secondary">Update Server</button>
+          </div>
+          <small class="field-help">Change the Graywolf daemon IP/port proxied by this client.</small>
+        </div>
+
+        <div class="settings-section">
+          <h4>Graywolf Daemon Connection</h4>
+          <div class="status-grid">
+            <div class="status-cell">
+              <span class="label">Status:</span>
+              <span class="value" id="diag-gw-status">Checking...</span>
+            </div>
+            <div class="status-cell">
+              <span class="label">Station Callsign:</span>
+              <span class="value" id="diag-gw-callsign">-</span>
+            </div>
+            <div class="status-cell">
+              <span class="label">Daemon Version:</span>
+              <span class="value" id="diag-gw-version">-</span>
+            </div>
+            <div class="status-cell">
+              <span class="label">Uptime:</span>
+              <span class="value" id="diag-gw-uptime">-</span>
+            </div>
+            <div class="status-cell">
+              <span class="label">Event Stream (SSE):</span>
+              <span class="value" id="diag-sse-status">Connecting...</span>
+            </div>
+            <div class="status-cell">
+              <span class="label">Active Target:</span>
+              <span class="value" id="diag-gw-target">-</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h4>Authentication</h4>
+          <form id="form-auth" class="auth-form">
+            <div class="form-row">
+              <input type="text" id="auth-username" placeholder="Username" autocomplete="username">
+              <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password">
+            </div>
+            <div class="auth-btn-row">
+              <button type="submit" class="btn-primary">Log In</button>
+              <button type="button" id="btn-auth-logout" class="btn-secondary">Log Out</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="settings-section">
+          <h4>Tablet UI Preferences</h4>
+          <div class="setting-item">
+            <label class="toggle-label">
+              <input type="checkbox" id="pref-sound" checked>
+              <span>Audible Beep on Incoming APRS Message</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label class="toggle-label">
+              <input type="checkbox" id="pref-haptic" checked>
+              <span>Haptic Vibration on Send & Receive (Touch Tablets)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-primary" id="btn-save-settings">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Dedicated Station Login Dialog -->
+  <dialog id="modal-login" class="modal-dialog modal-login">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>🔒 Graywolf Station Login</h3>
+        <button class="modal-close" id="btn-close-login">&times;</button>
+      </div>
+      <form id="form-modal-login" class="modal-body">
+        <div class="login-banner">
+          <div class="login-banner-title">Authentication Required</div>
+          <div class="login-banner-desc">Connected to Graywolf at <strong id="login-modal-target">10.0.0.122:8080</strong></div>
+        </div>
+
+        <div class="form-group">
+          <label for="modal-login-username">Operator Username:</label>
+          <input
+            type="text"
+            id="modal-login-username"
+            placeholder="Username"
+            required
+            autocomplete="username"
+            autocapitalize="none"
+          >
+        </div>
+
+        <div class="form-group">
+          <label for="modal-login-password">Password:</label>
+          <input
+            type="password"
+            id="modal-login-password"
+            placeholder="Password"
+            required
+            autocomplete="current-password"
+          >
+        </div>
+
+        <div id="login-error-msg" class="login-error hidden"></div>
+      </form>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" id="btn-cancel-login">Cancel</button>
+        <button type="submit" form="form-modal-login" class="btn-primary">Unlock & Connect</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Audio Chime Generator via Web Audio API -->
+  <script src="app.js?v=2.0.6" type="module"></script>
+</body>
+</html>
