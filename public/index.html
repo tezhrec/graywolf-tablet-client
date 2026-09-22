@@ -45,6 +45,11 @@
     </div>
 
     <div class="bar-right">
+      <button id="btn-spots-indicator" class="btn-spots-indicator" title="Live APRS OTA Spots Radar">
+        <span class="spots-indicator-icon">🛰️</span>
+        <span class="spots-indicator-text">SPOTS</span>
+        <span class="spots-indicator-badge" id="spots-top-count">0</span>
+      </button>
       <button id="btn-audio-toggle" class="icon-btn" title="Toggle audio chime">
         <span id="audio-icon">🔊</span>
       </button>
@@ -58,30 +63,71 @@
   </header>
 
   <!-- Main Tablet Workspace -->
-  <main class="app-workspace">
-    <!-- Left Conversation Drawer -->
+  <main class="app-workspace" id="app-workspace">
+    <!-- Left Conversation & Spots Drawer -->
     <aside class="conversation-drawer" id="conversation-drawer">
-      <div class="drawer-header">
-        <div class="search-box">
-          <input type="text" id="search-threads" placeholder="Search callsign or tactical..." autocomplete="off" autocorrect="off">
-          <span class="search-icon">🔍</span>
-        </div>
-        <button id="btn-new-chat" class="btn-primary-touch" title="Start new direct or tactical conversation">
-          <span>+</span> NEW
+      <!-- Dual View Switcher (Chats vs Spots) -->
+      <div class="drawer-view-tabs" id="drawer-view-tabs">
+        <button type="button" class="view-tab-btn active" id="tab-view-chats">
+          <span>💬</span> <span>CHATS</span>
+          <span class="tab-badge" id="chats-tab-badge">0</span>
+        </button>
+        <button type="button" class="view-tab-btn" id="tab-view-spots">
+          <span>🛰️</span> <span>SPOTS</span>
+          <span class="tab-badge spots-pulse" id="spots-tab-badge">0</span>
         </button>
       </div>
 
-      <!-- Filter Tabs -->
-      <div class="filter-tabs">
-        <button class="tab-btn active" data-filter="all">All (<span id="count-all">0</span>)</button>
-        <button class="tab-btn" data-filter="dm">DMs</button>
-        <button class="tab-btn" data-filter="tactical">Tactical</button>
-        <button class="tab-btn" data-filter="unread">Unread (<span id="count-unread">0</span>)</button>
+      <!-- Chats View Pane -->
+      <div class="drawer-view-pane" id="chats-view">
+        <div class="drawer-header">
+          <div class="search-box">
+            <input type="text" id="search-threads" placeholder="Search callsign or tactical..." autocomplete="off" autocorrect="off">
+            <span class="search-icon">🔍</span>
+          </div>
+          <button id="btn-new-chat" class="btn-primary-touch" title="Start new direct or tactical conversation">
+            <span>+</span> NEW
+          </button>
+        </div>
+
+        <!-- Filter Tabs -->
+        <div class="filter-tabs">
+          <button class="tab-btn active" data-filter="all">All (<span id="count-all">0</span>)</button>
+          <button class="tab-btn" data-filter="dm">DMs</button>
+          <button class="tab-btn" data-filter="tactical">Tactical</button>
+          <button class="tab-btn" data-filter="unread">Unread (<span id="count-unread">0</span>)</button>
+        </div>
+
+        <!-- Conversation List -->
+        <div class="conversation-list" id="conversation-list">
+          <div class="loading-state">Loading conversations...</div>
+        </div>
       </div>
 
-      <!-- Conversation List -->
-      <div class="conversation-list" id="conversation-list">
-        <div class="loading-state">Loading conversations...</div>
+      <!-- Live APRS OTA Spots View Pane -->
+      <div class="drawer-view-pane hidden" id="spots-view">
+        <div class="drawer-header spots-drawer-header">
+          <div class="search-box">
+            <input type="text" id="search-spots" placeholder="Search spot, park, grid..." autocomplete="off" autocorrect="off">
+            <span class="search-icon">🔍</span>
+          </div>
+          <button id="btn-refresh-spots" class="icon-btn" title="Refresh Live APRS OTA Spots">
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+          </button>
+        </div>
+
+        <!-- Spots Filter Tabs -->
+        <div class="filter-tabs spots-filter-tabs">
+          <button class="tab-btn active" data-spot-filter="all">All (<span id="count-spots-all">0</span>)</button>
+          <button class="tab-btn" data-spot-filter="pota">POTA (<span id="count-spots-pota">0</span>)</button>
+          <button class="tab-btn" data-spot-filter="sota">SOTA (<span id="count-spots-sota">0</span>)</button>
+          <button class="tab-btn" data-spot-filter="nearby">Nearby &lt;50mi</button>
+        </div>
+
+        <!-- Spots List -->
+        <div class="spots-list" id="spots-list">
+          <div class="loading-state">Fetching live APRS OTA spots...</div>
+        </div>
       </div>
     </aside>
 
@@ -203,6 +249,21 @@
         </div>
       </div>
     </section>
+
+    <!-- Widescreen Live Radar Panel (Collapsible for laptops/desktops >= 1200px) -->
+    <aside class="widescreen-radar-panel hidden" id="widescreen-radar-panel">
+      <div class="radar-panel-header">
+        <div class="radar-title-group">
+          <span class="radar-icon">🛰️</span>
+          <h3>APRS OTA RADAR</h3>
+          <span class="tab-badge spots-pulse" id="radar-panel-badge">0</span>
+        </div>
+        <button id="btn-close-radar-panel" class="icon-btn" title="Close Radar Panel">✕</button>
+      </div>
+      <div class="radar-panel-body" id="radar-panel-list">
+        <!-- Rendered with spot cards -->
+      </div>
+    </aside>
   </main>
 
   <!-- ================= Modals ================= -->
@@ -341,6 +402,28 @@
               <button type="button" id="btn-auth-logout" class="btn-secondary">Log Out</button>
             </div>
           </form>
+        <div class="settings-section">
+          <h4>🛰️ APRS OTA Integration (aprsota.org)</h4>
+          <div class="form-group">
+            <label for="setting-ota-token">APRS OTA API Bearer Token:</label>
+            <div class="token-input-row">
+              <input type="password" id="setting-ota-token" placeholder="aprsota_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+              <button type="button" id="btn-toggle-token-mask" class="btn-secondary" title="Show/Hide Token">👁️</button>
+            </div>
+            <small class="field-help">Free token via Jared K0TFU (<a href="https://aprsota.org/handbook/api" target="_blank" rel="noopener" style="color: #38bdf8;">handbook/api</a>). Leave empty to use simulated mock spots.</small>
+          </div>
+          <div class="form-group">
+            <label for="setting-ota-bot">OTA Bot Callsign Target for Chase:</label>
+            <input type="text" id="setting-ota-bot" value="APRSOTA" placeholder="APRSOTA or OTA" style="text-transform: uppercase;" autocomplete="off">
+            <small class="field-help">Default is APRSOTA (or regional bot callsign like OTA).</small>
+          </div>
+          <div class="ota-status-card" id="ota-status-card">
+            <div class="ota-status-indicator">
+              <span class="station-dot" id="ota-status-dot"></span>
+              <span id="ota-status-text">Checking OTA connection...</span>
+            </div>
+            <button type="button" id="btn-save-ota-config" class="btn-secondary">Save OTA Settings</button>
+          </div>
         </div>
 
         <div class="settings-section">

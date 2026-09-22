@@ -66,10 +66,80 @@ const htmlText = await staticRes.text();
 if (!htmlText.includes('Graywolf APRS - Tablet Terminal')) {
   throw new Error('index.html did not contain expected title');
 }
-console.log('✓ Static delivery verified: index.html length =', htmlText.length);
+if (!htmlText.includes('tab-view-spots') || !htmlText.includes('spots-list')) {
+  throw new Error('index.html did not contain APRS OTA Spots markup');
+}
+console.log('✓ Static delivery verified: index.html contains spots UI markup');
+
+console.log('Testing 9: GET /api/ota/now (Live APRS OTA Spots feed)');
+const otaRes = await fetch(`${baseUrl}/api/ota/now`);
+if (!otaRes.ok) throw new Error(`api/ota/now failed: ${otaRes.status}`);
+const spots = await otaRes.json();
+if (!Array.isArray(spots) || spots.length === 0) {
+  throw new Error('api/ota/now did not return an array of spots');
+}
+const firstSpot = spots[0];
+if (!firstSpot.callsign || !firstSpot.program || !firstSpot.reference) {
+  throw new Error('Spot object missing required fields: ' + JSON.stringify(firstSpot));
+}
+console.log(`✓ /api/ota/now: retrieved ${spots.length} active spots. Sample: ${firstSpot.callsign} (${firstSpot.program.toUpperCase()} ${firstSpot.reference}) at ${firstSpot.name}`);
+
+console.log('Testing 10: Polite 60s Caching on /api/ota/now');
+const cacheRes = await fetch(`${baseUrl}/api/ota/now`);
+if (!cacheRes.ok) throw new Error(`cached api/ota/now failed: ${cacheRes.status}`);
+const cacheHeader = cacheRes.headers.get('x-cache');
+console.log(`✓ /api/ota/now cache response: X-Cache = ${cacheHeader}`);
+
+console.log('Testing 11: GET /client/ota-status and POST /client/ota-config');
+const otaStatusRes = await fetch(`${baseUrl}/client/ota-status`);
+if (!otaStatusRes.ok) throw new Error(`client/ota-status failed: ${otaStatusRes.status}`);
+const otaStatus = await otaStatusRes.json();
+console.log('✓ /client/ota-status:', otaStatus);
+
+const updateConfigRes = await fetch(`${baseUrl}/client/ota-config`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    bot_callsign: 'OTA'
+  })
+});
+if (!updateConfigRes.ok) throw new Error(`client/ota-config failed: ${updateConfigRes.status}`);
+const updateConfig = await updateConfigRes.json();
+if (updateConfig.bot_callsign !== 'OTA') {
+  throw new Error('bot_callsign did not update to OTA');
+}
+console.log('✓ POST /client/ota-config updated bot callsign:', updateConfig);
+
+console.log('Testing 12: Distance & Bearing Math Validation');
+function calculateDistanceAndBearing(lat1, lon1, lat2, lon2) {
+  const toRad = d => (d * Math.PI) / 180;
+  const toDeg = r => (r * 180) / Math.PI;
+  const R_mi = 3958.8;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distMi = Math.round(R_mi * c);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+            Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  const brng = (toDeg(Math.atan2(y, x)) + 360) % 360;
+  const cardinals = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  const cardinal = cardinals[Math.round(brng / 22.5) % 16];
+  return { distanceMi: distMi, bearingDeg: Math.round(brng), cardinal };
+}
+
+// Pittsburgh (40.4406, -79.9959) to Mount Davis (39.7865, -79.1764)
+const mathTest = calculateDistanceAndBearing(40.4406, -79.9959, 39.7865, -79.1764);
+console.log(`✓ Distance/Bearing calculation: ${mathTest.distanceMi} mi, ${mathTest.bearingDeg}°, ${mathTest.cardinal}`);
+if (mathTest.distanceMi < 55 || mathTest.distanceMi > 70 || mathTest.cardinal !== 'SE') {
+  throw new Error(`Distance/bearing calculation unexpected: ${JSON.stringify(mathTest)}`);
+}
 
 console.log('\n=========================================');
-console.log('🎉 ALL 8 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 12 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);

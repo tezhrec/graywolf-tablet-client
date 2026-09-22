@@ -24,7 +24,16 @@ class GraywolfClient {
       hapticEnabled: localStorage.getItem('gw_pref_haptic') !== 'false',
       isConnected: false,
       isAuthenticated: false,
-      isTransmitting: false
+      isTransmitting: false,
+      
+      // APRS OTA Spots & Radar State
+      spots: [],
+      spotFilter: 'all',
+      spotSearchQuery: '',
+      otaStatus: null,
+      botCallsign: 'APRSOTA',
+      activeDrawerView: 'chats',
+      widescreenRadarOpen: false
     };
 
     this.dom = {};
@@ -58,6 +67,13 @@ class GraywolfClient {
 
     // Keepalive and station status poll every 15 seconds
     setInterval(() => this.pollStatus(), 15000);
+
+    // 5. Initial APRS OTA spots & status
+    this.fetchOtaStatus().catch(() => {});
+    this.fetchOtaSpots().catch(() => {});
+
+    // Polite 60-second polling for APRS OTA spots
+    setInterval(() => this.fetchOtaSpots(), 60000);
   }
 
   cacheDom() {
@@ -153,6 +169,37 @@ class GraywolfClient {
       prefSound: document.getElementById('pref-sound'),
       prefHaptic: document.getElementById('pref-haptic'),
 
+      // APRS OTA Spots & Radar Elements
+      btnSpotsIndicator: document.getElementById('btn-spots-indicator'),
+      spotsTopCount: document.getElementById('spots-top-count'),
+      tabViewChats: document.getElementById('tab-view-chats'),
+      tabViewSpots: document.getElementById('tab-view-spots'),
+      chatsTabBadge: document.getElementById('chats-tab-badge'),
+      spotsTabBadge: document.getElementById('spots-tab-badge'),
+      chatsView: document.getElementById('chats-view'),
+      spotsView: document.getElementById('spots-view'),
+      searchSpots: document.getElementById('search-spots'),
+      btnRefreshSpots: document.getElementById('btn-refresh-spots'),
+      spotFilterTabs: document.querySelectorAll('.spots-filter-tabs .tab-btn'),
+      countSpotsAll: document.getElementById('count-spots-all'),
+      countSpotsPota: document.getElementById('count-spots-pota'),
+      countSpotsSota: document.getElementById('count-spots-sota'),
+      spotsList: document.getElementById('spots-list'),
+
+      // Widescreen Radar Panel
+      widescreenRadarPanel: document.getElementById('widescreen-radar-panel'),
+      radarPanelBadge: document.getElementById('radar-panel-badge'),
+      radarPanelList: document.getElementById('radar-panel-list'),
+      btnCloseRadarPanel: document.getElementById('btn-close-radar-panel'),
+
+      // OTA Settings
+      settingOtaToken: document.getElementById('setting-ota-token'),
+      btnToggleTokenMask: document.getElementById('btn-toggle-token-mask'),
+      settingOtaBot: document.getElementById('setting-ota-bot'),
+      otaStatusDot: document.getElementById('ota-status-dot'),
+      otaStatusText: document.getElementById('ota-status-text'),
+      btnSaveOtaConfig: document.getElementById('btn-save-ota-config'),
+
       // Login Modal
       modalLogin: document.getElementById('modal-login'),
       formModalLogin: document.getElementById('form-modal-login'),
@@ -181,6 +228,61 @@ class GraywolfClient {
     this.dom.btnAudioToggle.addEventListener('click', () => this.toggleAudio());
     this.dom.btnFullscreenToggle.addEventListener('click', () => this.toggleFullscreen());
     this.dom.btnToggleDrawer.addEventListener('click', () => this.toggleDrawer());
+
+    // APRS OTA View Switcher & Top Indicator
+    this.dom.tabViewChats.addEventListener('click', () => this.switchDrawerView('chats'));
+    this.dom.tabViewSpots.addEventListener('click', () => this.switchDrawerView('spots'));
+    this.dom.btnSpotsIndicator.addEventListener('click', () => this.handleSpotsIndicatorClick());
+
+    // Spots Filter Tabs
+    this.dom.spotFilterTabs.forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.dom.spotFilterTabs.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.state.spotFilter = btn.dataset.spotFilter;
+        this.renderSpots();
+      });
+    });
+
+    // Spots Search Box
+    this.dom.searchSpots.addEventListener('input', (e) => {
+      this.state.spotSearchQuery = e.target.value.toLowerCase().trim();
+      this.renderSpots();
+    });
+
+    // Refresh Spots Button
+    this.dom.btnRefreshSpots.addEventListener('click', () => {
+      this.fetchOtaSpots(true);
+    });
+
+    // Close Widescreen Radar
+    if (this.dom.btnCloseRadarPanel) {
+      this.dom.btnCloseRadarPanel.addEventListener('click', () => {
+        this.toggleWidescreenRadar(false);
+      });
+    }
+
+    // Delegated 1-Tap Chase click handler
+    const handleSpotListClick = (e) => {
+      const btn = e.target.closest('.btn-chase');
+      if (btn) {
+        const call = btn.dataset.callsign;
+        const spot = this.state.spots.find(s => s.callsign === call);
+        this.handleChase(call, spot);
+      }
+    };
+    this.dom.spotsList.addEventListener('click', handleSpotListClick);
+    if (this.dom.radarPanelList) {
+      this.dom.radarPanelList.addEventListener('click', handleSpotListClick);
+    }
+
+    // Settings: APRS OTA Token & Bot
+    this.dom.btnToggleTokenMask.addEventListener('click', () => {
+      const isPass = this.dom.settingOtaToken.type === 'password';
+      this.dom.settingOtaToken.type = isPass ? 'text' : 'password';
+      this.dom.btnToggleTokenMask.textContent = isPass ? '🔒' : '👁️';
+    });
+    this.dom.btnSaveOtaConfig.addEventListener('click', () => this.saveOtaConfig());
 
     // Drawer Filter & Search
     this.dom.searchThreads.addEventListener('input', (e) => {
@@ -1268,6 +1370,7 @@ class GraywolfClient {
   // --- Settings & Server Switching ---
   openSettingsModal() {
     this.fetchStatus().catch(() => {});
+    this.fetchOtaStatus().catch(() => {});
     this.dom.modalSettings.showModal();
   }
 
@@ -1384,6 +1487,354 @@ class GraywolfClient {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  // --- APRS OTA & Spots Radar Logic ---
+
+  switchDrawerView(view) {
+    this.state.activeDrawerView = view;
+    if (view === 'spots') {
+      this.dom.tabViewChats.classList.remove('active');
+      this.dom.tabViewSpots.classList.add('active');
+      this.dom.chatsView.classList.add('hidden');
+      this.dom.spotsView.classList.remove('hidden');
+      this.renderSpots();
+    } else {
+      this.dom.tabViewSpots.classList.remove('active');
+      this.dom.tabViewChats.classList.add('active');
+      this.dom.spotsView.classList.add('hidden');
+      this.dom.chatsView.classList.remove('hidden');
+    }
+  }
+
+  handleSpotsIndicatorClick() {
+    if (window.innerWidth >= 1200) {
+      this.toggleWidescreenRadar();
+    } else {
+      this.dom.drawer.classList.remove('closed');
+      this.switchDrawerView('spots');
+    }
+  }
+
+  toggleWidescreenRadar(forceState) {
+    if (!this.dom.widescreenRadarPanel) return;
+    const isHidden = this.dom.widescreenRadarPanel.classList.contains('hidden');
+    const shouldOpen = forceState !== undefined ? forceState : isHidden;
+    if (shouldOpen) {
+      this.dom.widescreenRadarPanel.classList.remove('hidden');
+    } else {
+      this.dom.widescreenRadarPanel.classList.add('hidden');
+    }
+    this.state.widescreenRadarOpen = shouldOpen;
+    if (shouldOpen) {
+      this.renderSpots();
+    }
+  }
+
+  getActiveBeaconCoords() {
+    // Look for selected quick beacon first, or any beacon with valid lat/lon
+    const qid = this.state.quickBeaconId;
+    const b = this.state.beacons.find(b => b.id === qid && typeof b.latitude === 'number' && typeof b.longitude === 'number' && (b.latitude !== 0 || b.longitude !== 0))
+      || this.state.beacons.find(b => typeof b.latitude === 'number' && typeof b.longitude === 'number' && (b.latitude !== 0 || b.longitude !== 0));
+    
+    if (b) {
+      return { lat: b.latitude, lon: b.longitude, name: b.comment || `Beacon ${b.id}` };
+    }
+    return null;
+  }
+
+  calculateDistanceAndBearing(lat1, lon1, lat2, lon2) {
+    if (typeof lat1 !== 'number' || typeof lon1 !== 'number' || typeof lat2 !== 'number' || typeof lon2 !== 'number') {
+      return null;
+    }
+    const toRad = d => (d * Math.PI) / 180;
+    const toDeg = r => (r * 180) / Math.PI;
+
+    const R_mi = 3958.8; // Earth radius in miles
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distMi = Math.round(R_mi * c);
+
+    const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+    const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+              Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+    const brng = (toDeg(Math.atan2(y, x)) + 360) % 360;
+    const roundedBrng = Math.round(brng);
+
+    const cardinals = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    const cardIdx = Math.round(brng / 22.5) % 16;
+    const cardinal = cardinals[cardIdx];
+
+    return { distanceMi: distMi, bearingDeg: roundedBrng, cardinal };
+  }
+
+  async fetchOtaStatus() {
+    try {
+      const res = await fetch('/client/ota-status');
+      if (res.ok) {
+        const data = await res.json();
+        this.state.otaStatus = data;
+        if (data.bot_callsign) {
+          this.state.botCallsign = data.bot_callsign;
+        }
+
+        // Update settings modal display
+        if (this.dom.settingOtaBot) {
+          this.dom.settingOtaBot.value = this.state.botCallsign;
+        }
+        if (this.dom.otaStatusDot && this.dom.otaStatusText) {
+          if (data.configured) {
+            this.dom.otaStatusDot.className = 'station-dot online';
+            this.dom.otaStatusText.textContent = `APRS OTA Active (${data.token_preview}) · ${data.spots_count} spots`;
+          } else {
+            this.dom.otaStatusDot.className = 'station-dot';
+            this.dom.otaStatusText.textContent = 'Token Not Set (Using Simulated Mock Spots)';
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[OTA STATUS ERROR]', err);
+    }
+  }
+
+  async saveOtaConfig() {
+    const token = this.dom.settingOtaToken ? this.dom.settingOtaToken.value.trim() : '';
+    const botCall = this.dom.settingOtaBot ? (this.dom.settingOtaBot.value.trim().toUpperCase() || 'APRSOTA') : 'APRSOTA';
+
+    try {
+      const payload = { bot_callsign: botCall };
+      if (token) {
+        payload.aprsota_token = token;
+      }
+
+      const res = await fetch('/client/ota-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        this.showToast('APRS OTA settings saved', 'success');
+        if (this.dom.settingOtaToken) this.dom.settingOtaToken.value = '';
+        await this.fetchOtaStatus();
+        await this.fetchOtaSpots(true);
+      } else {
+        this.showToast('Failed to save OTA settings', 'error');
+      }
+    } catch (err) {
+      this.showToast(`Error saving settings: ${err.message}`, 'error');
+    }
+  }
+
+  async fetchOtaSpots(manual = false) {
+    try {
+      if (manual && this.dom.btnRefreshSpots) {
+        this.dom.btnRefreshSpots.classList.add('rotating');
+      }
+
+      const res = await fetch('/api/ota/now');
+      if (res.ok) {
+        const spots = await res.json();
+        if (Array.isArray(spots)) {
+          this.state.spots = spots;
+          this.updateSpotsCounters();
+          this.renderSpots();
+          if (manual) {
+            this.showToast(`Updated ${spots.length} live OTA spots`, 'info');
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[FETCH SPOTS ERROR]', err);
+      if (manual) {
+        this.showToast('Failed to fetch live spots', 'error');
+      }
+    } finally {
+      if (manual && this.dom.btnRefreshSpots) {
+        setTimeout(() => this.dom.btnRefreshSpots.classList.remove('rotating'), 500);
+      }
+    }
+  }
+
+  updateSpotsCounters() {
+    const total = this.state.spots.length;
+    let potaCount = 0;
+    let sotaCount = 0;
+
+    this.state.spots.forEach(s => {
+      const prog = (s.program || '').toLowerCase();
+      if (prog === 'pota') potaCount++;
+      else if (prog === 'sota') sotaCount++;
+    });
+
+    if (this.dom.spotsTopCount) this.dom.spotsTopCount.textContent = total;
+    if (this.dom.spotsTabBadge) this.dom.spotsTabBadge.textContent = total;
+    if (this.dom.radarPanelBadge) this.dom.radarPanelBadge.textContent = total;
+    if (this.dom.countSpotsAll) this.dom.countSpotsAll.textContent = total;
+    if (this.dom.countSpotsPota) this.dom.countSpotsPota.textContent = potaCount;
+    if (this.dom.countSpotsSota) this.dom.countSpotsSota.textContent = sotaCount;
+  }
+
+  renderSpots() {
+    const myCoords = this.getActiveBeaconCoords();
+    const filter = this.state.spotFilter;
+    const query = this.state.spotSearchQuery;
+
+    // Filter spots
+    const filtered = this.state.spots.filter(spot => {
+      // Program filter
+      const prog = (spot.program || '').toLowerCase();
+      if (filter === 'pota' && prog !== 'pota') return false;
+      if (filter === 'sota' && prog !== 'sota') return false;
+
+      // Distance calculation
+      let distObj = null;
+      if (myCoords && typeof spot.latitude === 'number' && typeof spot.longitude === 'number') {
+        distObj = this.calculateDistanceAndBearing(myCoords.lat, myCoords.lon, spot.latitude, spot.longitude);
+      }
+      spot._distObj = distObj;
+
+      if (filter === 'nearby') {
+        if (!distObj || distObj.distanceMi > 50) return false;
+      }
+
+      // Search query
+      if (query) {
+        const text = `${spot.callsign} ${spot.name || ''} ${spot.reference || ''} ${spot.grid || ''}`.toLowerCase();
+        if (!text.includes(query)) return false;
+      }
+
+      return true;
+    });
+
+    // Sort: if distance available, sort nearest first, otherwise by most recent last_qso or start
+    filtered.sort((a, b) => {
+      if (a._distObj && b._distObj) {
+        return a._distObj.distanceMi - b._distObj.distanceMi;
+      }
+      const ta = Date.parse(a.last_qso_at || a.started_at || 0) || 0;
+      const tb = Date.parse(b.last_qso_at || b.started_at || 0) || 0;
+      return tb - ta;
+    });
+
+    const html = filtered.length === 0
+      ? `<div class="empty-state-card" style="padding: 24px 16px; text-align: center; color: var(--text-dim);">
+           <div style="font-size: 28px; margin-bottom: 8px;">🛰️</div>
+           <p style="font-size: 14px; font-weight: 700; color: var(--text-muted);">No Active Spots Found</p>
+           <p style="font-size: 12px; margin-top: 4px;">${this.state.spots.length === 0 ? 'Waiting for live activations...' : 'Try selecting another filter tab.'}</p>
+         </div>`
+      : filtered.map(spot => this.createSpotCardHtml(spot, spot._distObj)).join('');
+
+    if (this.dom.spotsList) {
+      this.dom.spotsList.innerHTML = html;
+    }
+    if (this.dom.radarPanelList) {
+      this.dom.radarPanelList.innerHTML = html;
+    }
+  }
+
+  createSpotCardHtml(spot, distObj) {
+    const callsign = this.escapeHtml(spot.callsign || 'N0CALL');
+    const prog = (spot.program || 'ota').toUpperCase();
+    const badgeClass = prog.toLowerCase() === 'pota' ? 'pota' : (prog.toLowerCase() === 'sota' ? 'sota' : 'pota');
+    const ref = this.escapeHtml(spot.reference || '');
+    const name = this.escapeHtml(spot.name || 'Activation Site');
+    const grid = this.escapeHtml(spot.grid || '');
+    const qsos = spot.qsos || 0;
+    const points = spot.points || 0;
+
+    let timeAgo = '';
+    const lastActivity = spot.last_qso_at || spot.started_at;
+    if (lastActivity) {
+      const mins = Math.max(0, Math.round((Date.now() - new Date(lastActivity).getTime()) / 60000));
+      timeAgo = mins < 1 ? 'just now' : `${mins}m ago`;
+    }
+
+    let radarBadgeHtml = '';
+    if (distObj) {
+      radarBadgeHtml = `
+        <span class="spot-radar-tag" title="Distance & Compass Bearing from active beacon">
+          <span>📡</span> ${distObj.distanceMi} mi · ${distObj.cardinal} (${distObj.bearingDeg}°)
+        </span>
+      `;
+    } else if (grid) {
+      radarBadgeHtml = `<span class="spot-radar-tag">📍 Grid ${grid}</span>`;
+    }
+
+    return `
+      <div class="spot-card" data-callsign="${callsign}">
+        <div class="spot-card-header">
+          <div class="spot-call-group">
+            <span class="spot-callsign">${callsign}</span>
+            <span class="spot-badge ${badgeClass}">${prog} ${ref}</span>
+          </div>
+          ${timeAgo ? `<span class="spot-time">${timeAgo}</span>` : ''}
+        </div>
+        <div class="spot-name" title="${name}">${name}</div>
+        <div class="spot-meta-row">
+          ${radarBadgeHtml}
+          <span class="spot-stats">${qsos} QSOs · ${points} pts</span>
+        </div>
+        <div class="spot-actions-row">
+          <button type="button" class="btn-chase" data-callsign="${callsign}">
+            <span>⚡</span> <span>1-TAP CHASE</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  handleChase(callsign, spot) {
+    const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
+
+    // 1. Locate or create thread with the OTA bot
+    let botConv = this.state.conversations.find(c =>
+      c.thread_key.toUpperCase() === botCall ||
+      c.thread_key.toUpperCase() === 'APRSOTA' ||
+      c.thread_key.toUpperCase() === 'OTA'
+    );
+
+    if (!botConv) {
+      botConv = {
+        thread_key: botCall,
+        thread_kind: 'dm',
+        alias: 'APRS OTA Bot',
+        participant_count: 1
+      };
+      this.state.conversations.unshift(botConv);
+    }
+
+    // 2. Select the conversation thread
+    this.selectConversation(botConv);
+
+    // 3. Prepopulate message input with @CALLSIGN
+    const prefix = `@${callsign.toUpperCase()} `;
+    const currentVal = this.dom.inputMessage.value.trim();
+    if (!currentVal) {
+      this.dom.inputMessage.value = prefix;
+    } else if (!currentVal.startsWith(`@${callsign.toUpperCase()}`)) {
+      this.dom.inputMessage.value = `${prefix}${currentVal}`;
+    }
+
+    this.updateCharMeter();
+
+    // 4. Close drawer on small screens / tablets so message feed & composer are visible
+    if (window.innerWidth <= 768) {
+      this.dom.drawer.classList.add('closed');
+    }
+
+    // 5. Focus input and place cursor at end
+    this.dom.inputMessage.focus();
+    const len = this.dom.inputMessage.value.length;
+    if (typeof this.dom.inputMessage.setSelectionRange === 'function') {
+      this.dom.inputMessage.setSelectionRange(len, len);
+    }
+
+    this.showToast(`Chasing ${callsign} via ${botCall}`, 'info');
   }
 }
 
