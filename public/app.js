@@ -182,8 +182,9 @@ class GraywolfClient {
       btnRefreshSpots: document.getElementById('btn-refresh-spots'),
       spotFilterTabs: document.querySelectorAll('.spots-filter-tabs .tab-btn'),
       countSpotsAll: document.getElementById('count-spots-all'),
-      countSpotsPota: document.getElementById('count-spots-pota'),
-      countSpotsSota: document.getElementById('count-spots-sota'),
+      countSpotsNearby: document.getElementById('count-spots-nearby'),
+      countSpotsQsos: document.getElementById('count-spots-qsos'),
+      countSpotsRef: document.getElementById('count-spots-ref'),
       spotsList: document.getElementById('spots-list'),
 
       // Widescreen Radar Panel
@@ -1639,10 +1640,12 @@ class GraywolfClient {
         if (this.dom.otaStatusDot && this.dom.otaStatusText) {
           if (data.configured) {
             this.dom.otaStatusDot.className = 'station-dot online';
-            this.dom.otaStatusText.textContent = `APRS OTA Active (${data.token_preview}) · ${data.spots_count} spots`;
+            const clientName = data.client_name ? ` · ${data.client_name}` : '';
+            const count = data.ops_count ?? data.spots_count ?? 0;
+            this.dom.otaStatusText.textContent = `APRSOTA Active (${data.token_preview}${clientName}) · ${count} live ops`;
           } else {
             this.dom.otaStatusDot.className = 'station-dot';
-            this.dom.otaStatusText.textContent = 'Token Not Set (Using Simulated Mock Spots)';
+            this.dom.otaStatusText.textContent = 'Token Not Set (Using Simulated Mock Ops)';
           }
         }
       }
@@ -1688,20 +1691,20 @@ class GraywolfClient {
 
       const res = await fetch('/api/ota/now');
       if (res.ok) {
-        const spots = await res.json();
-        if (Array.isArray(spots)) {
-          this.state.spots = spots;
-          this.updateSpotsCounters();
-          this.renderSpots();
-          if (manual) {
-            this.showToast(`Updated ${spots.length} live OTA spots`, 'info');
-          }
+        const data = await res.json();
+        // Support both real schema { generated_at, on_air: [...] } and flat array
+        const ops = data.on_air || (Array.isArray(data) ? data : []);
+        this.state.spots = ops;
+        this.updateSpotsCounters();
+        this.renderSpots();
+        if (manual) {
+          this.showToast(`Updated ${ops.length} live APRSOTA ops`, 'info');
         }
       }
     } catch (err) {
       console.warn('[FETCH SPOTS ERROR]', err);
       if (manual) {
-        this.showToast('Failed to fetch live spots', 'error');
+        this.showToast('Failed to fetch live ops', 'error');
       }
     } finally {
       if (manual && this.dom.btnRefreshSpots) {
@@ -1712,21 +1715,32 @@ class GraywolfClient {
 
   updateSpotsCounters() {
     const total = this.state.spots.length;
-    let potaCount = 0;
-    let sotaCount = 0;
+    const myCoords = this.getActiveBeaconCoords();
+    let nearbyCount = 0;
+    let qsosCount = 0;
+    let refCount = 0;
 
-    this.state.spots.forEach(s => {
-      const prog = (s.program || '').toLowerCase();
-      if (prog === 'pota') potaCount++;
-      else if (prog === 'sota') sotaCount++;
+    this.state.spots.forEach(op => {
+      if (op.qsos && op.qsos > 0) qsosCount++;
+      if (op.reference) refCount++;
+
+      const lat = op.position?.lat ?? op.latitude;
+      const lon = op.position?.lon ?? op.longitude;
+      if (myCoords && typeof lat === 'number' && typeof lon === 'number') {
+        const dist = this.calculateDistanceAndBearing(myCoords.lat, myCoords.lon, lat, lon);
+        if (dist && dist.distanceMi <= 100) {
+          nearbyCount++;
+        }
+      }
     });
 
     if (this.dom.spotsTopCount) this.dom.spotsTopCount.textContent = total;
     if (this.dom.spotsTabBadge) this.dom.spotsTabBadge.textContent = total;
     if (this.dom.radarPanelBadge) this.dom.radarPanelBadge.textContent = total;
     if (this.dom.countSpotsAll) this.dom.countSpotsAll.textContent = total;
-    if (this.dom.countSpotsPota) this.dom.countSpotsPota.textContent = potaCount;
-    if (this.dom.countSpotsSota) this.dom.countSpotsSota.textContent = sotaCount;
+    if (this.dom.countSpotsNearby) this.dom.countSpotsNearby.textContent = nearbyCount;
+    if (this.dom.countSpotsQsos) this.dom.countSpotsQsos.textContent = qsosCount;
+    if (this.dom.countSpotsRef) this.dom.countSpotsRef.textContent = refCount;
   }
 
   renderSpots() {
@@ -1734,50 +1748,58 @@ class GraywolfClient {
     const filter = this.state.spotFilter;
     const query = this.state.spotSearchQuery;
 
-    // Filter spots
-    const filtered = this.state.spots.filter(spot => {
-      // Program filter
-      const prog = (spot.program || '').toLowerCase();
-      if (filter === 'pota' && prog !== 'pota') return false;
-      if (filter === 'sota' && prog !== 'sota') return false;
+    // Filter ops
+    const filtered = this.state.spots.filter(op => {
+      const lat = op.position?.lat ?? op.latitude;
+      const lon = op.position?.lon ?? op.longitude;
 
-      // Distance calculation
+      // Distance calculation from active Graywolf beacon
       let distObj = null;
-      if (myCoords && typeof spot.latitude === 'number' && typeof spot.longitude === 'number') {
-        distObj = this.calculateDistanceAndBearing(myCoords.lat, myCoords.lon, spot.latitude, spot.longitude);
+      if (myCoords && typeof lat === 'number' && typeof lon === 'number') {
+        distObj = this.calculateDistanceAndBearing(myCoords.lat, myCoords.lon, lat, lon);
       }
-      spot._distObj = distObj;
+      op._distObj = distObj;
 
       if (filter === 'nearby') {
-        if (!distObj || distObj.distanceMi > 50) return false;
+        if (!distObj || distObj.distanceMi > 100) return false;
+      } else if (filter === 'qsos') {
+        if (!op.qsos || op.qsos <= 0) return false;
+      } else if (filter === 'ref') {
+        if (!op.reference) return false;
       }
 
-      // Search query
+      // Search query across callsign, station, op number, description, grid, country
       if (query) {
-        const text = `${spot.callsign} ${spot.name || ''} ${spot.reference || ''} ${spot.grid || ''}`.toLowerCase();
+        const countryName = op.country?.name || '';
+        const countryCode = op.country?.code || '';
+        const waterName = op.water?.name || '';
+        const desc = op.description || op.name || op.comment || '';
+        const text = `${op.callsign || ''} ${op.station || ''} ${op.number || ''} ${desc} ${op.reference || ''} ${op.grid || ''} ${countryName} ${countryCode} ${waterName}`.toLowerCase();
         if (!text.includes(query)) return false;
       }
 
       return true;
     });
 
-    // Sort: if distance available, sort nearest first, otherwise by most recent last_qso or start
+    // Sort: if distance available, sort nearest first; otherwise by most recent on-air / activity
     filtered.sort((a, b) => {
       if (a._distObj && b._distObj) {
         return a._distObj.distanceMi - b._distObj.distanceMi;
       }
-      const ta = Date.parse(a.last_qso_at || a.started_at || 0) || 0;
-      const tb = Date.parse(b.last_qso_at || b.started_at || 0) || 0;
+      if (a._distObj) return -1;
+      if (b._distObj) return 1;
+      const ta = Date.parse(a.on_air_at || a.started_at || a.last_qso_at || 0) || 0;
+      const tb = Date.parse(b.on_air_at || b.started_at || b.last_qso_at || 0) || 0;
       return tb - ta;
     });
 
     const html = filtered.length === 0
       ? `<div class="empty-state-card" style="padding: 24px 16px; text-align: center; color: var(--text-dim);">
            <div style="font-size: 28px; margin-bottom: 8px;">🛰️</div>
-           <p style="font-size: 14px; font-weight: 700; color: var(--text-muted);">No Active Spots Found</p>
+           <p style="font-size: 14px; font-weight: 700; color: var(--text-muted);">No Active Ops Found</p>
            <p style="font-size: 12px; margin-top: 4px;">${this.state.spots.length === 0 ? 'Waiting for live activations...' : 'Try selecting another filter tab.'}</p>
          </div>`
-      : filtered.map(spot => this.createSpotCardHtml(spot, spot._distObj)).join('');
+      : filtered.map(op => this.createSpotCardHtml(op, op._distObj)).join('');
 
     if (this.dom.spotsList) {
       this.dom.spotsList.innerHTML = html;
@@ -1787,23 +1809,33 @@ class GraywolfClient {
     }
   }
 
-  createSpotCardHtml(spot, distObj) {
-    const callsign = this.escapeHtml(spot.callsign || 'N0CALL');
-    const prog = (spot.program || 'ota').toUpperCase();
-    const badgeClass = prog.toLowerCase() === 'pota' ? 'pota' : (prog.toLowerCase() === 'sota' ? 'sota' : 'pota');
-    const ref = this.escapeHtml(spot.reference || '');
-    const name = this.escapeHtml(spot.name || 'Activation Site');
-    const grid = this.escapeHtml(spot.grid || '');
-    const qsos = spot.qsos || 0;
-    const points = spot.points || 0;
+  createSpotCardHtml(op, distObj) {
+    const baseCall = this.escapeHtml((op.callsign || 'N0CALL').toUpperCase());
+    const station = this.escapeHtml(op.station || op.callsign || baseCall);
+    const opNumber = op.number ? `Op #${op.number}` : (op.op ? `Op #${op.op}` : '');
+    const ref = this.escapeHtml(op.reference || '');
+    const description = this.escapeHtml(op.description || op.name || op.comment || (op.country?.name ? `${op.country.name}${op.water ? ` · ${op.water.name}` : ''}` : 'APRSOTA Activation'));
+    const grid = this.escapeHtml(op.grid || '');
+    const qsos = op.qsos ?? 0;
+    const points = op.points ?? 0;
 
-    let timeAgo = '';
-    const lastActivity = spot.last_qso_at || spot.started_at;
-    if (lastActivity) {
-      const mins = Math.max(0, Math.round((Date.now() - new Date(lastActivity).getTime()) / 60000));
-      timeAgo = mins < 1 ? 'just now' : `${mins}m ago`;
+    // Time remaining countdown or start time
+    let timerBadgeHtml = '';
+    if (op.expires_at) {
+      const msLeft = new Date(op.expires_at).getTime() - Date.now();
+      if (msLeft > 0) {
+        const minsLeft = Math.round(msLeft / 60000);
+        timerBadgeHtml = `<span class="spot-countdown" title="Expires at ${op.expires_at}">⏱ ${minsLeft}m left</span>`;
+      } else {
+        timerBadgeHtml = `<span class="spot-countdown" style="color: var(--text-dim);">⏱ Expired</span>`;
+      }
+    } else if (op.last_qso_at || op.started_at || op.on_air_at) {
+      const ts = op.last_qso_at || op.started_at || op.on_air_at;
+      const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
+      timerBadgeHtml = `<span class="spot-time">${mins < 1 ? 'just now' : `${mins}m ago`}</span>`;
     }
 
+    // Radar distance & bearing
     let radarBadgeHtml = '';
     if (distObj) {
       radarBadgeHtml = `
@@ -1815,30 +1847,44 @@ class GraywolfClient {
       radarBadgeHtml = `<span class="spot-radar-tag">📍 Grid ${grid}</span>`;
     }
 
+    // Place / Region Tag
+    const placeParts = [];
+    if (op.country?.name) placeParts.push(op.country.name);
+    if (op.water?.name) placeParts.push(op.water.name);
+    const placeHtml = placeParts.length > 0
+      ? `<span class="spot-country-tag">🌍 ${this.escapeHtml(placeParts.join(' · '))}</span>`
+      : '';
+
     return `
-      <div class="spot-card" data-callsign="${callsign}">
+      <div class="spot-card" data-callsign="${baseCall}">
         <div class="spot-card-header">
           <div class="spot-call-group">
-            <span class="spot-callsign">${callsign}</span>
-            <span class="spot-badge ${badgeClass}">${prog} ${ref}</span>
+            <span class="spot-callsign">${baseCall}</span>
+            ${station !== baseCall ? `<span class="spot-station-tag">(${station})</span>` : ''}
+            ${opNumber ? `<span class="spot-op-num">${opNumber}</span>` : ''}
+            ${ref ? `<span class="spot-badge ref">${ref}</span>` : ''}
           </div>
-          ${timeAgo ? `<span class="spot-time">${timeAgo}</span>` : ''}
+          ${timerBadgeHtml}
         </div>
-        <div class="spot-name" title="${name}">${name}</div>
+        <div class="spot-desc" title="${description}">${description}</div>
         <div class="spot-meta-row">
-          ${radarBadgeHtml}
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            ${radarBadgeHtml}
+            ${placeHtml}
+          </div>
           <span class="spot-stats">${qsos} QSOs · ${points} pts</span>
         </div>
         <div class="spot-actions-row">
-          <button type="button" class="btn-chase" data-callsign="${callsign}">
-            <span>⚡</span> <span>1-TAP CHASE</span>
+          <button type="button" class="btn-chase" data-callsign="${baseCall}" data-station="${station}">
+            <span>⚡</span> <span>1-TAP CHASE @${baseCall}</span>
           </button>
         </div>
       </div>
     `;
   }
 
-  handleChase(callsign, spot) {
+  handleChase(rawCallsign, spot) {
+    const baseCall = (rawCallsign || '').split('-')[0].toUpperCase();
     const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
 
     // 1. Locate or create thread with the OTA bot
@@ -1861,13 +1907,17 @@ class GraywolfClient {
     // 2. Select the conversation thread
     this.selectConversation(botConv);
 
-    // 3. Prepopulate message input with @CALLSIGN
-    const prefix = `@${callsign.toUpperCase()} `;
-    const currentVal = this.dom.inputMessage.value.trim();
+    // 3. Prepopulate message input with @BASECALL
+    const prefix = `@${baseCall} `;
+    let currentVal = this.dom.inputMessage.value.trim();
     if (!currentVal) {
       this.dom.inputMessage.value = prefix;
-    } else if (!currentVal.startsWith(`@${callsign.toUpperCase()}`)) {
-      this.dom.inputMessage.value = `${prefix}${currentVal}`;
+    } else {
+      // If already starts with @SOME_CALL, cleanly swap it
+      if (/^@[A-Za-z0-9/-]+\s*/.test(currentVal)) {
+        currentVal = currentVal.replace(/^@[A-Za-z0-9/-]+\s*/, '');
+      }
+      this.dom.inputMessage.value = currentVal.length > 0 ? `${prefix}${currentVal} ` : prefix;
     }
 
     this.updateCharMeter();
@@ -1884,7 +1934,7 @@ class GraywolfClient {
       this.dom.inputMessage.setSelectionRange(len, len);
     }
 
-    this.showToast(`Chasing ${callsign} via ${botCall}`, 'info');
+    this.showToast(`Chasing ${baseCall} via ${botCall}`, 'info');
   }
 }
 

@@ -658,93 +658,157 @@ let otaNowCache = {
   data: null
 };
 
-const MOCK_OTA_SPOTS = [
-  {
-    op: 42,
-    callsign: 'K3NG',
-    program: 'pota',
-    reference: 'K-1234',
-    name: 'Point State Park',
-    grid: 'FN00al',
-    latitude: 40.4414,
-    longitude: -80.0078,
-    qsos: 14,
-    points: 2,
-    active: true,
-    started_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-    expires_at: new Date(Date.now() + 135 * 60 * 1000).toISOString(),
-    last_qso_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
-    comment: '7.032 CW and 144.390 APRS'
-  },
-  {
-    op: 43,
-    callsign: 'W3ATV',
-    program: 'sota',
-    reference: 'W3/PW-001',
-    name: 'Mount Davis (High Point)',
-    grid: 'FN09lv',
-    latitude: 39.7865,
-    longitude: -79.1764,
-    qsos: 8,
-    points: 6,
-    active: true,
-    started_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-    expires_at: new Date(Date.now() + 150 * 60 * 1000).toISOString(),
-    last_qso_at: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
-    comment: 'Summits on the Air 2m packet & voice'
-  },
-  {
-    op: 44,
-    callsign: 'N3YKW',
-    program: 'pota',
-    reference: 'K-4567',
-    name: 'Allegheny Islands State Park',
-    grid: 'EN90xm',
-    latitude: 40.5362,
-    longitude: -79.8242,
-    qsos: 22,
-    points: 3,
-    active: true,
-    started_at: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
-    expires_at: new Date(Date.now() + 90 * 60 * 1000).toISOString(),
-    last_qso_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
-    comment: 'Island activation on battery'
-  },
-  {
-    op: 45,
-    callsign: 'KB3SAR',
-    program: 'pota',
-    reference: 'K-1402',
-    name: 'Ohiopyle State Park',
-    grid: 'FN09cu',
-    latitude: 39.8681,
-    longitude: -79.4947,
-    qsos: 5,
-    points: 1,
-    active: true,
-    started_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-    expires_at: new Date(Date.now() + 165 * 60 * 1000).toISOString(),
-    last_qso_at: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
-    comment: 'QRP backpack portable'
-  },
-  {
-    op: 46,
-    callsign: 'AA3B',
-    program: 'sota',
-    reference: 'W3/CR-002',
-    name: 'Blue Knob',
-    grid: 'FN10bi',
-    latitude: 40.2917,
-    longitude: -78.5606,
-    qsos: 19,
-    points: 8,
-    active: true,
-    started_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-    expires_at: new Date(Date.now() + 120 * 60 * 1000).toISOString(),
-    last_qso_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-    comment: '14.062 CW / 144.39 APRS'
+let otaClientCache = {
+  token: null,
+  name: null,
+  timestamp: 0
+};
+
+async function verifyOtaToken(token) {
+  if (!token || isMock) {
+    return { valid: false, name: null };
   }
-];
+  if (otaClientCache.token === token && (Date.now() - otaClientCache.timestamp < 300000)) {
+    return { valid: true, name: otaClientCache.name };
+  }
+
+  return new Promise(resolve => {
+    const options = {
+      hostname: 'aprsota.org',
+      port: 443,
+      path: '/api/v1/client',
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'Graywolf-Tablet-Client/1.0 (amateur-radio)',
+        'Accept': 'application/json'
+      },
+      timeout: 5000
+    };
+
+    const upstreamReq = https.request(options, upstreamRes => {
+      let body = '';
+      upstreamRes.on('data', chunk => { body += chunk; });
+      upstreamRes.on('end', () => {
+        if (upstreamRes.statusCode === 200) {
+          try {
+            const data = JSON.parse(body);
+            otaClientCache = {
+              token,
+              name: data.name || 'APRSOTA Client',
+              timestamp: Date.now()
+            };
+            return resolve({ valid: true, name: data.name });
+          } catch {
+            // ignore
+          }
+        }
+        resolve({ valid: false, name: null });
+      });
+    });
+
+    upstreamReq.on('error', () => resolve({ valid: false, name: null }));
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy();
+      resolve({ valid: false, name: null });
+    });
+    upstreamReq.end();
+  });
+}
+
+const MOCK_OTA_SPOTS = {
+  generated_at: new Date().toISOString(),
+  on_air: [
+    {
+      callsign: 'K3NG',
+      station: 'K3NG-7',
+      number: 42,
+      state: 'on_air',
+      description: 'Point State Park 7.032 CW & 144.39 APRS',
+      reference: 'K-1234',
+      grid: 'FN00al',
+      position: { lat: 40.4414, lon: -80.0078 },
+      country: { code: 'US', name: 'United States of America' },
+      water: null,
+      on_air_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 135 * 60 * 1000).toISOString(),
+      ended_at: null,
+      end_reason: null,
+      signoff: null,
+      qsos: 14,
+      incomplete: 0,
+      points: 24,
+      url: 'https://aprsota.org/K3NG/ops/42',
+      card_image_url: null
+    },
+    {
+      callsign: 'W3ATV',
+      station: 'W3ATV-1',
+      number: 43,
+      state: 'on_air',
+      description: 'Mount Davis High Point 2m packet & voice',
+      reference: 'W3/PW-001',
+      grid: 'FN09lv',
+      position: { lat: 39.7865, lon: -79.1764 },
+      country: { code: 'US', name: 'United States of America' },
+      water: null,
+      on_air_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 150 * 60 * 1000).toISOString(),
+      ended_at: null,
+      end_reason: null,
+      signoff: null,
+      qsos: 8,
+      incomplete: 0,
+      points: 18,
+      url: 'https://aprsota.org/W3ATV/ops/43',
+      card_image_url: null
+    },
+    {
+      callsign: 'XE3JCL',
+      station: 'XE3JCL-1',
+      number: 110,
+      state: 'on_air',
+      description: 'happy Tuesday 73',
+      reference: null,
+      grid: 'EL51fa',
+      position: { lat: 21.005833, lon: -89.5625 },
+      country: { code: 'MX', name: 'Mexico' },
+      water: null,
+      on_air_at: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 35 * 60 * 1000).toISOString(),
+      ended_at: null,
+      end_reason: null,
+      signoff: null,
+      qsos: 5,
+      incomplete: 0,
+      points: 16,
+      url: 'https://aprsota.org/XE3JCL/ops/110',
+      card_image_url: null
+    },
+    {
+      callsign: 'DL7PJ',
+      station: 'DL7PJ-7',
+      number: 209,
+      state: 'on_air',
+      description: 'Last OP📡from Eifel🌋 via TD-H9📻',
+      reference: null,
+      grid: 'JN39jv',
+      position: { lat: 49.8985, lon: 6.7585 },
+      country: { code: 'DE', name: 'Germany' },
+      water: null,
+      on_air_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      ended_at: null,
+      end_reason: null,
+      signoff: null,
+      qsos: 4,
+      incomplete: 0,
+      points: 15,
+      url: 'https://aprsota.org/DL7PJ/ops/209',
+      card_image_url: null
+    }
+  ]
+};
 
 async function handleOtaApi(req, res, pathname, query) {
   res.setHeader('Content-Type', 'application/json');
@@ -867,13 +931,28 @@ async function handleOtaClient(req, res, pathname) {
     const hasToken = Boolean(token && token.length > 0);
     const masked = hasToken ? (token.substring(0, 8) + '...' + token.slice(-4)) : '';
 
+    if (hasToken && !otaClientCache.name && !isMock) {
+      await verifyOtaToken(token);
+    }
+
+    let opsCount = 0;
+    if (otaNowCache.data) {
+      if (Array.isArray(otaNowCache.data.on_air)) {
+        opsCount = otaNowCache.data.on_air.length;
+      } else if (Array.isArray(otaNowCache.data)) {
+        opsCount = otaNowCache.data.length;
+      }
+    }
+
     res.writeHead(200);
     return res.end(JSON.stringify({
       configured: hasToken,
       token_preview: masked,
+      client_name: otaClientCache.name || (hasToken ? 'APRSOTA Client' : null),
       bot_callsign: (config.bot_callsign || 'APRSOTA').toUpperCase(),
       last_sync: otaNowCache.timestamp ? new Date(otaNowCache.timestamp).toISOString() : null,
-      spots_count: Array.isArray(otaNowCache.data) ? otaNowCache.data.length : 0,
+      ops_count: opsCount,
+      spots_count: opsCount,
       mode: isMock ? 'mock' : (hasToken ? 'live-aprsota' : 'mock-preview')
     }));
   }
@@ -884,6 +963,8 @@ async function handleOtaClient(req, res, pathname) {
       const updates = {};
       if (typeof payload.aprsota_token === 'string') {
         updates.aprsota_token = payload.aprsota_token.trim();
+        otaClientCache.token = null;
+        otaClientCache.name = null;
       }
       if (typeof payload.bot_callsign === 'string' && payload.bot_callsign.trim()) {
         updates.bot_callsign = payload.bot_callsign.trim().toUpperCase();
@@ -893,10 +974,15 @@ async function handleOtaClient(req, res, pathname) {
       // Reset cache timestamp to force fresh fetch
       otaNowCache.timestamp = 0;
 
+      if (saved.aprsota_token && !isMock) {
+        await verifyOtaToken(saved.aprsota_token);
+      }
+
       res.writeHead(200);
       return res.end(JSON.stringify({
         status: 'ok',
         configured: Boolean(saved.aprsota_token),
+        client_name: otaClientCache.name || null,
         bot_callsign: saved.bot_callsign || 'APRSOTA'
       }));
     } catch (err) {

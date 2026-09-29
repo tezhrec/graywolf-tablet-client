@@ -71,18 +71,19 @@ if (!htmlText.includes('tab-view-spots') || !htmlText.includes('spots-list')) {
 }
 console.log('✓ Static delivery verified: index.html contains spots UI markup');
 
-console.log('Testing 9: GET /api/ota/now (Live APRS OTA Spots feed)');
+console.log('Testing 9: GET /api/ota/now (Live APRS OTA Ops feed)');
 const otaRes = await fetch(`${baseUrl}/api/ota/now`);
 if (!otaRes.ok) throw new Error(`api/ota/now failed: ${otaRes.status}`);
-const spots = await otaRes.json();
-if (!Array.isArray(spots) || spots.length === 0) {
-  throw new Error('api/ota/now did not return an array of spots');
+const otaData = await otaRes.json();
+const ops = otaData.on_air || (Array.isArray(otaData) ? otaData : []);
+if (!Array.isArray(ops) || ops.length === 0) {
+  throw new Error('api/ota/now did not return an array of ops: ' + JSON.stringify(otaData));
 }
-const firstSpot = spots[0];
-if (!firstSpot.callsign || !firstSpot.program || !firstSpot.reference) {
-  throw new Error('Spot object missing required fields: ' + JSON.stringify(firstSpot));
+const firstOp = ops[0];
+if (!firstOp.callsign || !firstOp.number || !firstOp.position) {
+  throw new Error('Op object missing required fields: ' + JSON.stringify(firstOp));
 }
-console.log(`✓ /api/ota/now: retrieved ${spots.length} active spots. Sample: ${firstSpot.callsign} (${firstSpot.program.toUpperCase()} ${firstSpot.reference}) at ${firstSpot.name}`);
+console.log(`✓ /api/ota/now: retrieved ${ops.length} active ops. Sample: Op #${firstOp.number} by ${firstOp.callsign} (${firstOp.description})`);
 
 console.log('Testing 10: Polite 60s Caching on /api/ota/now');
 const cacheRes = await fetch(`${baseUrl}/api/ota/now`);
@@ -95,6 +96,9 @@ const otaStatusRes = await fetch(`${baseUrl}/client/ota-status`);
 if (!otaStatusRes.ok) throw new Error(`client/ota-status failed: ${otaStatusRes.status}`);
 const otaStatus = await otaStatusRes.json();
 console.log('✓ /client/ota-status:', otaStatus);
+if (typeof otaStatus.ops_count !== 'number' || otaStatus.ops_count !== ops.length) {
+  throw new Error(`Expected ops_count ${ops.length}, got ${otaStatus.ops_count}`);
+}
 
 const updateConfigRes = await fetch(`${baseUrl}/client/ota-config`, {
   method: 'POST',

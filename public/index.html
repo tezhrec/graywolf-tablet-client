@@ -45,9 +45,9 @@
     </div>
 
     <div class="bar-right">
-      <button id="btn-spots-indicator" class="btn-spots-indicator" title="Live APRS OTA Spots Radar">
+      <button id="btn-spots-indicator" class="btn-spots-indicator" title="Live APRSOTA On-Air Ops">
         <span class="spots-indicator-icon">🛰️</span>
-        <span class="spots-indicator-text">SPOTS</span>
+        <span class="spots-indicator-text">OPS</span>
         <span class="spots-indicator-badge" id="spots-top-count">0</span>
       </button>
       <button id="btn-audio-toggle" class="icon-btn" title="Toggle audio chime">
@@ -66,14 +66,14 @@
   <main class="app-workspace" id="app-workspace">
     <!-- Left Conversation & Spots Drawer -->
     <aside class="conversation-drawer" id="conversation-drawer">
-      <!-- Dual View Switcher (Chats vs Spots) -->
+      <!-- Dual View Switcher (Chats vs Live Ops) -->
       <div class="drawer-view-tabs" id="drawer-view-tabs">
         <button type="button" class="view-tab-btn active" id="tab-view-chats">
           <span>💬</span> <span>CHATS</span>
           <span class="tab-badge" id="chats-tab-badge">0</span>
         </button>
         <button type="button" class="view-tab-btn" id="tab-view-spots">
-          <span>🛰️</span> <span>SPOTS</span>
+          <span>🛰️</span> <span>LIVE OPS</span>
           <span class="tab-badge spots-pulse" id="spots-tab-badge">0</span>
         </button>
       </div>
@@ -104,29 +104,29 @@
         </div>
       </div>
 
-      <!-- Live APRS OTA Spots View Pane -->
+      <!-- Live APRSOTA Ops View Pane -->
       <div class="drawer-view-pane hidden" id="spots-view">
         <div class="drawer-header spots-drawer-header">
           <div class="search-box">
-            <input type="text" id="search-spots" placeholder="Search spot, park, grid..." autocomplete="off" autocorrect="off">
+            <input type="text" id="search-spots" placeholder="Search callsign, description, grid..." autocomplete="off" autocorrect="off">
             <span class="search-icon">🔍</span>
           </div>
-          <button id="btn-refresh-spots" class="icon-btn" title="Refresh Live APRS OTA Spots">
+          <button id="btn-refresh-spots" class="icon-btn" title="Refresh Live APRSOTA Ops">
             <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
           </button>
         </div>
 
-        <!-- Spots Filter Tabs -->
+        <!-- Ops Filter Tabs -->
         <div class="filter-tabs spots-filter-tabs">
           <button class="tab-btn active" data-spot-filter="all">All (<span id="count-spots-all">0</span>)</button>
-          <button class="tab-btn" data-spot-filter="pota">POTA (<span id="count-spots-pota">0</span>)</button>
-          <button class="tab-btn" data-spot-filter="sota">SOTA (<span id="count-spots-sota">0</span>)</button>
-          <button class="tab-btn" data-spot-filter="nearby">Nearby &lt;50mi</button>
+          <button class="tab-btn" data-spot-filter="nearby">Nearby &lt;100mi (<span id="count-spots-nearby">0</span>)</button>
+          <button class="tab-btn" data-spot-filter="qsos">QSOs &gt;0 (<span id="count-spots-qsos">0</span>)</button>
+          <button class="tab-btn" data-spot-filter="ref">Has Ref (<span id="count-spots-ref">0</span>)</button>
         </div>
 
-        <!-- Spots List -->
+        <!-- Ops List -->
         <div class="spots-list" id="spots-list">
-          <div class="loading-state">Fetching live APRS OTA spots...</div>
+          <div class="loading-state">Fetching live APRSOTA on-air ops...</div>
         </div>
       </div>
     </aside>
@@ -255,13 +255,13 @@
       <div class="radar-panel-header">
         <div class="radar-title-group">
           <span class="radar-icon">🛰️</span>
-          <h3>APRS OTA RADAR</h3>
+          <h3>LIVE APRSOTA OPS</h3>
           <span class="tab-badge spots-pulse" id="radar-panel-badge">0</span>
         </div>
         <button id="btn-close-radar-panel" class="icon-btn" title="Close Radar Panel">✕</button>
       </div>
       <div class="radar-panel-body" id="radar-panel-list">
-        <!-- Rendered with spot cards -->
+        <!-- Rendered with live op cards -->
       </div>
     </aside>
   </main>
