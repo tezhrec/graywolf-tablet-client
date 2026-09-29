@@ -8,6 +8,13 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+
 function getArgValue(flagNames) {
   for (const flag of flagNames) {
     const idx = process.argv.indexOf(flag);
@@ -981,14 +988,19 @@ async function handleOtaApi(req, res, pathname, query) {
       const upstreamReq = https.request(options, upstreamRes => {
         if (upstreamRes.statusCode === 304 && otaNowCache.data) {
           otaNowCache.timestamp = Date.now();
-          res.setHeader('X-Cache', '304-REVALIDATED');
-          res.writeHead(200);
-          return res.end(JSON.stringify(otaNowCache.data));
+          if (!res.headersSent) {
+            res.setHeader('X-Cache', '304-REVALIDATED');
+            res.writeHead(200);
+            return res.end(JSON.stringify(otaNowCache.data));
+          }
+          return;
         }
 
         let body = '';
         upstreamRes.on('data', chunk => { body += chunk; });
         upstreamRes.on('end', () => {
+          if (res.headersSent) return;
+
           if (upstreamRes.statusCode === 200) {
             try {
               const parsed = JSON.parse(body);
@@ -1020,10 +1032,23 @@ async function handleOtaApi(req, res, pathname, query) {
           res.writeHead(upstreamRes.statusCode || 502);
           res.end(body || JSON.stringify({ error: `Upstream error ${upstreamRes.statusCode}` }));
         });
+
+        upstreamRes.on('error', err => {
+          console.warn('[OTA UPSTREAM RES ERROR]', err.message);
+          if (res.headersSent) return;
+          if (otaNowCache.data) {
+            res.setHeader('X-Cache', 'STALE-OFFLINE');
+            res.writeHead(200);
+            return res.end(JSON.stringify(otaNowCache.data));
+          }
+          res.writeHead(502);
+          res.end(JSON.stringify({ error: `Connection interrupted: ${err.message}` }));
+        });
       });
 
       upstreamReq.on('error', err => {
         console.warn('[OTA UPSTREAM ERROR]', err.message);
+        if (res.headersSent) return;
         if (otaNowCache.data) {
           res.setHeader('X-Cache', 'STALE-OFFLINE');
           res.writeHead(200);
@@ -1040,8 +1065,10 @@ async function handleOtaApi(req, res, pathname, query) {
       upstreamReq.end();
     } catch (err) {
       console.error('[OTA DISPATCH ERROR]', err);
-      res.writeHead(500);
-      res.end(JSON.stringify({ error: err.message }));
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
     }
     return;
   }
@@ -1101,19 +1128,30 @@ async function handleOtaApi(req, res, pathname, query) {
         let body = '';
         upstreamRes.on('data', chunk => { body += chunk; });
         upstreamRes.on('end', () => {
+          if (res.headersSent) return;
           res.writeHead(upstreamRes.statusCode || 200);
           res.end(body);
         });
+        upstreamRes.on('error', err => {
+          console.warn('[OTA OPERATOR RES ERROR]', err.message);
+          if (res.headersSent) return;
+          res.writeHead(502);
+          res.end(JSON.stringify({ error: err.message }));
+        });
       });
       upstreamReq.on('error', err => {
+        console.warn('[OTA OPERATOR UPSTREAM ERROR]', err.message);
+        if (res.headersSent) return;
         res.writeHead(502);
         res.end(JSON.stringify({ error: err.message }));
       });
       upstreamReq.on('timeout', () => upstreamReq.destroy(new Error('Timeout')));
       upstreamReq.end();
     } catch (err) {
-      res.writeHead(500);
-      res.end(JSON.stringify({ error: err.message }));
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
     }
     return;
   }
