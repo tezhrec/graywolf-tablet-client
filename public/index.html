@@ -50,6 +50,11 @@
         <span class="spots-indicator-text">OPS</span>
         <span class="spots-indicator-badge" id="spots-top-count">0</span>
       </button>
+      <button id="btn-host-indicator" class="btn-spots-indicator btn-host-indicator" title="APRSOTA Host / Activation Assistant HUD">
+        <span class="spots-indicator-icon">🎙️</span>
+        <span class="spots-indicator-text">HOST</span>
+        <span class="spots-indicator-badge" id="host-top-badge">OFF</span>
+      </button>
       <button id="btn-audio-toggle" class="icon-btn" title="Toggle audio chime">
         <span id="audio-icon">🔊</span>
       </button>
@@ -66,15 +71,19 @@
   <main class="app-workspace" id="app-workspace">
     <!-- Left Conversation & Spots Drawer -->
     <aside class="conversation-drawer" id="conversation-drawer">
-      <!-- Dual View Switcher (Chats vs Live Ops) -->
+      <!-- View Switcher (Chats vs Live Ops vs Host HUD) -->
       <div class="drawer-view-tabs" id="drawer-view-tabs">
         <button type="button" class="view-tab-btn active" id="tab-view-chats">
           <span>💬</span> <span>CHATS</span>
           <span class="tab-badge" id="chats-tab-badge">0</span>
         </button>
         <button type="button" class="view-tab-btn" id="tab-view-spots">
-          <span>🛰️</span> <span>LIVE OPS</span>
+          <span>🛰️</span> <span>OPS</span>
           <span class="tab-badge spots-pulse" id="spots-tab-badge">0</span>
+        </button>
+        <button type="button" class="view-tab-btn" id="tab-view-host">
+          <span>🎙️</span> <span>HOST</span>
+          <span class="tab-badge" id="host-tab-badge">OFF</span>
         </button>
       </div>
 
@@ -127,6 +136,88 @@
         <!-- Ops List -->
         <div class="spots-list" id="spots-list">
           <div class="loading-state">Fetching live APRSOTA on-air ops...</div>
+        </div>
+      </div>
+
+      <!-- Host / Activation Assistant HUD Pane -->
+      <div class="drawer-view-pane hidden" id="host-view">
+        <div class="host-hud-card">
+          <div class="host-status-header">
+            <div class="host-status-pill off" id="host-status-pill">
+              <span class="host-status-dot"></span>
+              <span id="host-status-text">OFF AIR</span>
+            </div>
+            <span class="host-op-num-badge" id="host-hud-op-num">Op --</span>
+          </div>
+          <div class="host-op-desc" id="host-hud-desc">Ready to go on the air. Tap 'Start Op' below to begin an activation.</div>
+          
+          <div class="host-meta-grid">
+            <div class="host-meta-item">
+              <span class="meta-label">TIME LEFT</span>
+              <span class="meta-val" id="host-hud-time-left">--</span>
+            </div>
+            <div class="host-meta-item">
+              <span class="meta-label">QSOS</span>
+              <span class="meta-val highlight" id="host-hud-qsos">0</span>
+            </div>
+            <div class="host-meta-item">
+              <span class="meta-label">POINTS</span>
+              <span class="meta-val" id="host-hud-points">0</span>
+            </div>
+            <div class="host-meta-item">
+              <span class="meta-label">GRID</span>
+              <span class="meta-val" id="host-hud-grid">--</span>
+            </div>
+          </div>
+
+          <!-- iGate Beacon Watchdog -->
+          <div class="host-watchdog-box">
+            <div class="watchdog-info">
+              <span class="watchdog-icon">📡</span>
+              <div>
+                <div class="watchdog-title">iGate Beacon Keep-Alive</div>
+                <div class="watchdog-sub" id="host-watchdog-status">Last beacon: Never</div>
+              </div>
+            </div>
+            <button type="button" class="btn-primary-touch btn-tx-beacon-now" id="btn-host-tx-beacon" title="Transmit RF beacon immediately">
+              <span>⚡</span> TX BEACON
+            </button>
+          </div>
+
+          <!-- Tactical Host Actions -->
+          <div class="host-actions-grid" id="host-actions-grid">
+            <button type="button" class="btn-host-action btn-start-op" id="btn-host-start-op">
+              <span>🚀</span> START OP
+            </button>
+            <button type="button" class="btn-host-action" id="btn-host-stay" disabled title="Add +30m to activation">
+              <span>⏱</span> STAY (+30m)
+            </button>
+            <button type="button" class="btn-host-action" id="btn-host-chasers" disabled title="Query un-QSLed chasers from bot">
+              <span>📋</span> CHASERS
+            </button>
+            <button type="button" class="btn-host-action" id="btn-host-blast" disabled title="Broadcast message to all chasers on op">
+              <span>📢</span> BLAST
+            </button>
+            <button type="button" class="btn-host-action" id="btn-host-time" disabled title="Query time remaining from bot">
+              <span>ℹ️</span> TIME?
+            </button>
+            <button type="button" class="btn-host-action btn-end-op" id="btn-host-end-op" disabled title="End activation with sign-off">
+              <span>⏹️</span> END OP
+            </button>
+          </div>
+        </div>
+
+        <!-- Interactive Chaser Queue Section -->
+        <div class="chaser-queue-section">
+          <div class="section-title-row">
+            <h4>CHASER PILEUP QUEUE (<span id="chaser-queue-count">0</span>)</h4>
+            <button type="button" class="btn-text-action" id="btn-clear-qsl-chasers" title="Clear confirmed contacts">Clear QSLed</button>
+          </div>
+          <div class="chaser-queue-list" id="chaser-queue-list">
+            <div class="empty-state-card" style="padding: 16px 12px; text-align: center; color: var(--text-dim); font-size: 13px;">
+              No chasers waiting. Chasers contacting you via APRSOTA will appear here automatically.
+            </div>
+          </div>
         </div>
       </div>
     </aside>
@@ -188,6 +279,22 @@
               <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
             </button>
           </div>
+        </div>
+
+        <!-- Floating Host HUD Strip (visible during active op or pending beacon) -->
+        <div class="chat-host-hud-strip hidden" id="chat-host-hud-strip">
+          <div class="hud-strip-left">
+            <span class="hud-strip-pill" id="strip-status-pill">ON AIR</span>
+            <span class="hud-strip-op" id="strip-op-number">Op --</span>
+            <span class="hud-strip-time" id="strip-time-left">⏱ --m</span>
+            <span class="hud-strip-qsos" id="strip-qsos-count">🏆 0 QSOs</span>
+            <span class="hud-strip-beacon" id="strip-beacon-time">📡 Beacon: --</span>
+            <button type="button" class="btn-strip-beacon" id="btn-strip-tx-beacon" title="Send RF beacon now">⚡ Beacon</button>
+          </div>
+          <div class="hud-strip-queue" id="strip-chaser-queue">
+            <!-- Chips of waiting chasers: [@CALLSIGN QSL] -->
+          </div>
+          <button type="button" class="hud-strip-view-btn" id="btn-strip-open-host" title="Open Full Host Assistant HUD">🎙️ HUD</button>
         </div>
 
         <!-- Scrollable Message Feed -->
@@ -489,6 +596,118 @@
       <div class="modal-footer">
         <button type="button" class="btn-secondary" id="btn-cancel-login">Cancel</button>
         <button type="submit" form="form-modal-login" class="btn-primary">Unlock & Connect</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Start APRSOTA Op -->
+  <dialog id="modal-start-op" class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>🎙️ Start APRSOTA Activation (HOST)</h3>
+        <button class="modal-close" id="btn-close-start-op">&times;</button>
+      </div>
+      <form id="form-start-op" class="modal-body">
+        <p class="section-desc">
+          Begin hosting an activation with the APRSOTA bot. After sending <code>HOST</code>, you will have <strong>5 minutes</strong> to transmit your position report on RF to go on the air.
+        </p>
+
+        <div class="form-group">
+          <label for="input-op-desc">Activation Description / Activity (Optional):</label>
+          <input
+            type="text"
+            id="input-op-desc"
+            placeholder="e.g. POTA K-1234 or SOTA W6/NC-001 or Field Day"
+            maxlength="40"
+            autocomplete="off"
+          >
+          <div class="preset-pills">
+            <button type="button" class="pill-btn" data-preset="POTA">POTA</button>
+            <button type="button" class="pill-btn" data-preset="SOTA">SOTA</button>
+            <button type="button" class="pill-btn" data-preset="FIELD DAY">FIELD DAY</button>
+            <button type="button" class="pill-btn" data-preset="PORTABLE">PORTABLE</button>
+            <button type="button" class="pill-btn" data-preset="EMCOMM">EMCOMM</button>
+          </div>
+        </div>
+
+        <div class="host-notice-box">
+          <div class="notice-icon">⏱️</div>
+          <div>
+            <strong>5-Minute Beacon Window</strong>
+            <p>Once submitted, the bot will prompt: <em>"Send a position report within 5 mins to go on the air"</em>. You can tap <strong>[⚡ TX BEACON]</strong> immediately on the HUD.</p>
+          </div>
+        </div>
+      </form>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" id="btn-cancel-start-op">Cancel</button>
+        <button type="submit" form="form-start-op" class="btn-primary" id="btn-submit-start-op">🚀 Go On Air (HOST)</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: End APRSOTA Op -->
+  <dialog id="modal-end-op" class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>🛑 End Activation (DONE)</h3>
+        <button class="modal-close" id="btn-close-end-op">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="end-op-summary">
+          <p>Are you ready to close this APRSOTA activation? Sending <code>DONE</code> will finalize your log with the bot and post final QSO and point totals to your web profile.</p>
+          
+          <div class="host-meta-grid" style="margin-top: 16px;">
+            <div class="host-meta-item">
+              <span class="meta-label">QSOS LOGGED</span>
+              <span class="meta-val highlight" id="modal-end-qsos">0</span>
+            </div>
+            <div class="host-meta-item">
+              <span class="meta-label">POINTS</span>
+              <span class="meta-val" id="modal-end-points">0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" id="btn-cancel-end-op">Keep Operating</button>
+        <button type="button" class="btn-primary-danger" id="btn-confirm-end-op">⏹️ End Activation (DONE)</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Blast Announcement to Chasers -->
+  <dialog id="modal-blast-op" class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📢 APRSOTA Broadcast (BLAST)</h3>
+        <button class="modal-close" id="btn-close-blast-op">&times;</button>
+      </div>
+      <form id="form-blast-op" class="modal-body">
+        <p class="section-desc">
+          Send a broadcast message via APRSOTA to all chasers who checked in with your activation today.
+        </p>
+
+        <div class="form-group">
+          <label for="input-blast-text">Broadcast Text (max 50 chars):</label>
+          <input
+            type="text"
+            id="input-blast-text"
+            placeholder="e.g. QSY 14.060 CW in 5m or QRT in 10m 73"
+            maxlength="50"
+            required
+            autocomplete="off"
+          >
+          <div class="preset-pills">
+            <button type="button" class="pill-btn" data-preset="QSY 14.060 CW">QSY 14.060 CW</button>
+            <button type="button" class="pill-btn" data-preset="QSY 7.030 CW">QSY 7.030 CW</button>
+            <button type="button" class="pill-btn" data-preset="QSY 14.285 SSB">QSY 14.285 SSB</button>
+            <button type="button" class="pill-btn" data-preset="QRT in 10 mins 73">QRT in 10m 73</button>
+          </div>
+        </div>
+      </form>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" id="btn-cancel-blast-op">Cancel</button>
+        <button type="submit" form="form-blast-op" class="btn-primary" id="btn-submit-blast-op">📢 Send BLAST</button>
       </div>
     </div>
   </dialog>

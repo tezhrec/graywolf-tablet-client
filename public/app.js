@@ -33,7 +33,22 @@ class GraywolfClient {
       otaStatus: null,
       botCallsign: 'APRSOTA',
       activeDrawerView: 'chats',
-      widescreenRadarOpen: false
+      widescreenRadarOpen: false,
+
+      // APRS OTA Host / Activation Assistant State
+      host: {
+        status: 'off', // 'off' | 'pending' | 'on_air' | 'ended'
+        opNumber: null,
+        grid: null,
+        description: '',
+        startedAt: null,
+        expiresAt: null,
+        qsos: 0,
+        points: 0,
+        lastBeaconAt: null,
+        pendingBeaconExpiresAt: null,
+        chasers: []
+      }
     };
 
     this.dom = {};
@@ -74,6 +89,10 @@ class GraywolfClient {
 
     // Polite 60-second polling for APRS OTA spots
     setInterval(() => this.fetchOtaSpots(), 60000);
+
+    // 6. Host / Activation Assistant watchdog timer & initial status sync
+    setInterval(() => this.updateHostWatchdogAndTimer(), 3000);
+    this.fetchHostOpStatus().catch(() => {});
   }
 
   cacheDom() {
@@ -212,7 +231,62 @@ class GraywolfClient {
       btnCancelLogin: document.getElementById('btn-cancel-login'),
 
       // Toast container
-      toastContainer: document.getElementById('toast-container')
+      toastContainer: document.getElementById('toast-container'),
+
+      // APRSOTA Host / Activation Assistant Elements
+      btnHostIndicator: document.getElementById('btn-host-indicator'),
+      hostTopBadge: document.getElementById('host-top-badge'),
+      tabViewHost: document.getElementById('tab-view-host'),
+      hostTabBadge: document.getElementById('host-tab-badge'),
+      hostView: document.getElementById('host-view'),
+      hostStatusPill: document.getElementById('host-status-pill'),
+      hostStatusText: document.getElementById('host-status-text'),
+      hostHudOpNum: document.getElementById('host-hud-op-num'),
+      hostHudDesc: document.getElementById('host-hud-desc'),
+      hostHudTimeLeft: document.getElementById('host-hud-time-left'),
+      hostHudQsos: document.getElementById('host-hud-qsos'),
+      hostHudPoints: document.getElementById('host-hud-points'),
+      hostHudGrid: document.getElementById('host-hud-grid'),
+      hostWatchdogStatus: document.getElementById('host-watchdog-status'),
+      btnHostTxBeacon: document.getElementById('btn-host-tx-beacon'),
+      btnHostStartOp: document.getElementById('btn-host-start-op'),
+      btnHostStay: document.getElementById('btn-host-stay'),
+      btnHostChasers: document.getElementById('btn-host-chasers'),
+      btnHostBlast: document.getElementById('btn-host-blast'),
+      btnHostTime: document.getElementById('btn-host-time'),
+      btnHostEndOp: document.getElementById('btn-host-end-op'),
+      chaserQueueCount: document.getElementById('chaser-queue-count'),
+      chaserQueueList: document.getElementById('chaser-queue-list'),
+      btnClearQslChasers: document.getElementById('btn-clear-qsl-chasers'),
+
+      // Chat Host HUD Strip
+      chatHostHudStrip: document.getElementById('chat-host-hud-strip'),
+      stripStatusPill: document.getElementById('strip-status-pill'),
+      stripOpNumber: document.getElementById('strip-op-number'),
+      stripTimeLeft: document.getElementById('strip-time-left'),
+      stripQsosCount: document.getElementById('strip-qsos-count'),
+      stripBeaconTime: document.getElementById('strip-beacon-time'),
+      btnStripTxBeacon: document.getElementById('btn-strip-tx-beacon'),
+      stripChaserQueue: document.getElementById('strip-chaser-queue'),
+      btnStripOpenHost: document.getElementById('btn-strip-open-host'),
+
+      // Host Modals
+      modalStartOp: document.getElementById('modal-start-op'),
+      btnCloseStartOp: document.getElementById('btn-close-start-op'),
+      btnCancelStartOp: document.getElementById('btn-cancel-start-op'),
+      formStartOp: document.getElementById('form-start-op'),
+      inputOpDesc: document.getElementById('input-op-desc'),
+      modalEndOp: document.getElementById('modal-end-op'),
+      btnCloseEndOp: document.getElementById('btn-close-end-op'),
+      btnCancelEndOp: document.getElementById('btn-cancel-end-op'),
+      btnConfirmEndOp: document.getElementById('btn-confirm-end-op'),
+      modalEndQsos: document.getElementById('modal-end-qsos'),
+      modalEndPoints: document.getElementById('modal-end-points'),
+      modalBlastOp: document.getElementById('modal-blast-op'),
+      btnCloseBlastOp: document.getElementById('btn-close-blast-op'),
+      btnCancelBlastOp: document.getElementById('btn-cancel-blast-op'),
+      formBlastOp: document.getElementById('form-blast-op'),
+      inputBlastText: document.getElementById('input-blast-text')
     };
   }
 
@@ -233,7 +307,155 @@ class GraywolfClient {
     // APRS OTA View Switcher & Top Indicator
     this.dom.tabViewChats.addEventListener('click', () => this.switchDrawerView('chats'));
     this.dom.tabViewSpots.addEventListener('click', () => this.switchDrawerView('spots'));
+    if (this.dom.tabViewHost) {
+      this.dom.tabViewHost.addEventListener('click', () => this.switchDrawerView('host'));
+    }
     this.dom.btnSpotsIndicator.addEventListener('click', () => this.handleSpotsIndicatorClick());
+    if (this.dom.btnHostIndicator) {
+      this.dom.btnHostIndicator.addEventListener('click', () => this.handleHostIndicatorClick());
+    }
+    if (this.dom.btnStripOpenHost) {
+      this.dom.btnStripOpenHost.addEventListener('click', () => this.handleHostIndicatorClick());
+    }
+
+    // Host HUD Watchdog Beacon Triggers
+    if (this.dom.btnHostTxBeacon) {
+      this.dom.btnHostTxBeacon.addEventListener('click', () => this.handleTriggerQuickBeacon());
+    }
+    if (this.dom.btnStripTxBeacon) {
+      this.dom.btnStripTxBeacon.addEventListener('click', () => this.handleTriggerQuickBeacon());
+    }
+
+    // Clear QSLed Chasers
+    if (this.dom.btnClearQslChasers) {
+      this.dom.btnClearQslChasers.addEventListener('click', () => {
+        this.state.host.chasers = this.state.host.chasers.filter(c => c.status !== 'confirmed');
+        this.renderHostHud();
+        this.showToast('Cleared confirmed QSL chasers from queue', 'info');
+      });
+    }
+
+    // Delegated 1-Tap QSL on Chaser Queue
+    if (this.dom.chaserQueueList) {
+      this.dom.chaserQueueList.addEventListener('click', (e) => {
+        const btn = e.target.closest('.btn-qsl-chaser');
+        if (btn && btn.dataset.callsign) {
+          this.qslChaser(btn.dataset.callsign);
+        }
+      });
+    }
+
+    // Delegated 1-Tap QSL on Chat HUD Strip Chips
+    if (this.dom.stripChaserQueue) {
+      this.dom.stripChaserQueue.addEventListener('click', (e) => {
+        const chip = e.target.closest('.chaser-queue-chip');
+        if (chip && chip.dataset.callsign) {
+          this.qslChaser(chip.dataset.callsign);
+        }
+      });
+    }
+
+    // Tactical Host Action Buttons & Modals
+    if (this.dom.btnHostStartOp) {
+      this.dom.btnHostStartOp.addEventListener('click', () => this.dom.modalStartOp.showModal());
+    }
+    if (this.dom.btnCloseStartOp) {
+      this.dom.btnCloseStartOp.addEventListener('click', () => this.dom.modalStartOp.close());
+    }
+    if (this.dom.btnCancelStartOp) {
+      this.dom.btnCancelStartOp.addEventListener('click', () => this.dom.modalStartOp.close());
+    }
+    if (this.dom.formStartOp) {
+      this.dom.formStartOp.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const desc = (this.dom.inputOpDesc.value || '').trim();
+        this.dom.modalStartOp.close();
+        this.sendBotCommand(desc ? `HOST ${desc}` : 'HOST');
+        this.state.host.status = 'pending';
+        this.state.host.description = desc;
+        this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+        this.renderHostHud();
+      });
+    }
+    if (this.dom.modalStartOp) {
+      this.dom.modalStartOp.querySelectorAll('.pill-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.dom.inputOpDesc.value = btn.dataset.preset;
+        });
+      });
+    }
+
+    if (this.dom.btnHostStay) {
+      this.dom.btnHostStay.addEventListener('click', () => {
+        this.sendBotCommand('STAY');
+        this.showToast('Sent STAY (+30m) to bot', 'info');
+      });
+    }
+
+    if (this.dom.btnHostChasers) {
+      this.dom.btnHostChasers.addEventListener('click', () => {
+        this.sendBotCommand('CHASERS');
+        this.showToast('Queried un-QSLed chasers from bot', 'info');
+      });
+    }
+
+    if (this.dom.btnHostBlast) {
+      this.dom.btnHostBlast.addEventListener('click', () => this.dom.modalBlastOp.showModal());
+    }
+    if (this.dom.btnCloseBlastOp) {
+      this.dom.btnCloseBlastOp.addEventListener('click', () => this.dom.modalBlastOp.close());
+    }
+    if (this.dom.btnCancelBlastOp) {
+      this.dom.btnCancelBlastOp.addEventListener('click', () => this.dom.modalBlastOp.close());
+    }
+    if (this.dom.formBlastOp) {
+      this.dom.formBlastOp.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = (this.dom.inputBlastText.value || '').trim();
+        if (!text) return;
+        this.dom.modalBlastOp.close();
+        this.dom.inputBlastText.value = '';
+        this.sendBotCommand(`BLAST ${text}`);
+        this.showToast(`Broadcast sent: BLAST ${text}`, 'info');
+      });
+    }
+    if (this.dom.modalBlastOp) {
+      this.dom.modalBlastOp.querySelectorAll('.pill-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.dom.inputBlastText.value = btn.dataset.preset;
+        });
+      });
+    }
+
+    if (this.dom.btnHostTime) {
+      this.dom.btnHostTime.addEventListener('click', () => {
+        this.sendBotCommand('TIME');
+        this.showToast('Queried time remaining from bot', 'info');
+      });
+    }
+
+    if (this.dom.btnHostEndOp) {
+      this.dom.btnHostEndOp.addEventListener('click', () => {
+        if (this.dom.modalEndQsos) this.dom.modalEndQsos.textContent = this.state.host.qsos;
+        if (this.dom.modalEndPoints) this.dom.modalEndPoints.textContent = this.state.host.points;
+        this.dom.modalEndOp.showModal();
+      });
+    }
+    if (this.dom.btnCloseEndOp) {
+      this.dom.btnCloseEndOp.addEventListener('click', () => this.dom.modalEndOp.close());
+    }
+    if (this.dom.btnCancelEndOp) {
+      this.dom.btnCancelEndOp.addEventListener('click', () => this.dom.modalEndOp.close());
+    }
+    if (this.dom.btnConfirmEndOp) {
+      this.dom.btnConfirmEndOp.addEventListener('click', () => {
+        this.dom.modalEndOp.close();
+        this.sendBotCommand('DONE');
+        this.state.host.status = 'ended';
+        this.renderHostHud();
+        this.showToast('Ended activation with DONE', 'info');
+      });
+    }
 
     // Spots Filter Tabs
     this.dom.spotFilterTabs.forEach(btn => {
@@ -773,6 +995,13 @@ class GraywolfClient {
       if (res.ok) {
         this.showToast(`📡 Beacon "${beaconName}" transmitted successfully!`, 'success');
         this.startBeaconCooldown();
+        this.state.host.lastBeaconAt = Date.now();
+        if (this.state.host.status === 'pending') {
+          this.state.host.status = 'on_air';
+          if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
+          if (!this.state.host.expiresAt) this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+        }
+        this.renderHostHud();
         this.fetchStatus().catch(() => {});
       } else {
         const err = await res.json().catch(() => ({}));
@@ -818,6 +1047,8 @@ class GraywolfClient {
 
     const msg = change.message || (change.thread_key ? change : null);
     if (!msg) return;
+
+    this.processHostMessage(msg, isLive);
 
     // Reconcile against existing state.messages by server ID, client_id, or msg_id
     const existingIdx = this.state.messages.findIndex(m => {
@@ -938,6 +1169,13 @@ class GraywolfClient {
 
   handleIncomingEvent(data, eventType) {
     if (data.type === 'beacon_sent' || eventType === 'beacon_sent') {
+      this.state.host.lastBeaconAt = Date.now();
+      if (this.state.host.status === 'pending') {
+        this.state.host.status = 'on_air';
+        if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
+        if (!this.state.host.expiresAt) this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+      }
+      this.renderHostHud();
       this.showToast(`📡 External RF Beacon transmitted (${data.callsign || 'Station'})`, 'info');
       this.fetchStatus().catch(() => {});
       return;
@@ -1266,6 +1504,7 @@ class GraywolfClient {
       extended: text.length > 67
     };
     this.state.messages.push(optimisticMsg);
+    this.processHostMessage(optimisticMsg, true);
     this.renderMessages();
 
     try {
@@ -1544,18 +1783,31 @@ class GraywolfClient {
 
   switchDrawerView(view) {
     this.state.activeDrawerView = view;
+    this.dom.tabViewChats.classList.remove('active');
+    this.dom.tabViewSpots.classList.remove('active');
+    if (this.dom.tabViewHost) this.dom.tabViewHost.classList.remove('active');
+
+    this.dom.chatsView.classList.add('hidden');
+    this.dom.spotsView.classList.add('hidden');
+    if (this.dom.hostView) this.dom.hostView.classList.add('hidden');
+
     if (view === 'spots') {
-      this.dom.tabViewChats.classList.remove('active');
       this.dom.tabViewSpots.classList.add('active');
-      this.dom.chatsView.classList.add('hidden');
       this.dom.spotsView.classList.remove('hidden');
       this.renderSpots();
+    } else if (view === 'host') {
+      if (this.dom.tabViewHost) this.dom.tabViewHost.classList.add('active');
+      if (this.dom.hostView) this.dom.hostView.classList.remove('hidden');
+      this.renderHostHud();
     } else {
-      this.dom.tabViewSpots.classList.remove('active');
       this.dom.tabViewChats.classList.add('active');
-      this.dom.spotsView.classList.add('hidden');
       this.dom.chatsView.classList.remove('hidden');
     }
+  }
+
+  handleHostIndicatorClick() {
+    this.dom.drawer.classList.remove('closed');
+    this.switchDrawerView('host');
   }
 
   handleSpotsIndicatorClick() {
@@ -1935,6 +2187,422 @@ class GraywolfClient {
     }
 
     this.showToast(`Chasing ${baseCall} via ${botCall}`, 'info');
+  }
+
+  // --- APRS OTA Host / Activation Assistant Logic ---
+
+  processHostMessage(msg, isLive = true) {
+    if (!msg || !msg.text) return;
+    const text = msg.text.trim();
+    const fromCall = (msg.from_call || '').toUpperCase();
+    const toCall = (msg.to_call || '').toUpperCase();
+    const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
+    const isFromBot = fromCall === 'APRSOTA' || fromCall === 'OTA' || fromCall === botCall;
+    const isToBot = toCall === 'APRSOTA' || toCall === 'OTA' || toCall === botCall;
+
+    // 1. Operator outgoing messages to bot
+    if (isToBot && msg.direction === 'out') {
+      if (/^(HOST|QRV)\b/i.test(text)) {
+        this.state.host.status = 'pending';
+        this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
+        this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+        this.renderHostHud();
+      } else if (/^(DONE|QRT)\b/i.test(text)) {
+        this.state.host.status = 'ended';
+        this.renderHostHud();
+      } else if (/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))\b/i.test(text)) {
+        const match = text.match(/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))/i);
+        const targetCall = (match[1] || match[2]).toUpperCase();
+        const baseTarget = targetCall.split('-')[0];
+
+        let found = false;
+        for (const c of this.state.host.chasers) {
+          if (c.callsign === targetCall || c.baseCall === baseTarget) {
+            if (c.status !== 'confirmed') {
+              c.status = 'confirmed';
+              this.state.host.qsos += 1;
+              this.state.host.points += 3;
+            }
+            found = true;
+          }
+        }
+        if (!found) {
+          this.state.host.chasers.push({
+            callsign: targetCall,
+            baseCall: baseTarget,
+            grid: '----',
+            message: '',
+            receivedAt: new Date().toISOString(),
+            status: 'confirmed'
+          });
+          this.state.host.qsos += 1;
+          this.state.host.points += 3;
+        }
+        this.renderHostHud();
+      }
+      return;
+    }
+
+    // 2. Incoming messages from bot
+    if (isFromBot && msg.direction === 'in') {
+      // (a) Bot prompt to beacon within 5 mins
+      if (/Send a position report within 5 mins/i.test(text)) {
+        this.state.host.status = 'pending';
+        this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+        if (isLive) this.showToast('⏱️ Transmit RF beacon within 5 mins to go on air!', 'warning');
+        this.renderHostHud();
+      }
+      // (b) Bot on-air announcement
+      else if (/is on the air from\s+([A-Za-z0-9]{4,6})\.\s*aprsota\.org\/([A-Za-z0-9/-]+)\/ops\/(\d+)/i.test(text)) {
+        const match = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})\.\s*aprsota\.org\/([A-Za-z0-9/-]+)\/ops\/(\d+)/i);
+        this.state.host.status = 'on_air';
+        this.state.host.grid = match[1].toUpperCase();
+        this.state.host.opNumber = parseInt(match[3], 10);
+        if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
+        this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+        if (isLive) this.showToast(`🚀 On the air as Op #${this.state.host.opNumber} from ${this.state.host.grid}!`, 'success');
+        this.renderHostHud();
+      }
+      // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>"
+      else if (/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i.test(text)) {
+        const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i);
+        const chaserCall = match[1].toUpperCase();
+        const grid = match[2].toUpperCase();
+        const extra = (match[3] || '').trim();
+
+        // Check if this is a QSL confirmation relay: "DE <CHASER> QSL ..."
+        if (/^QSL\b/i.test(grid) || /^QSL\b/i.test(extra)) {
+          const chaser = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === chaserCall.split('-')[0]);
+          if (chaser) chaser.status = 'confirmed';
+          this.renderHostHud();
+          return;
+        }
+
+        // New chaser check-in
+        const baseCall = chaserCall.split('-')[0];
+        let existing = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
+        if (existing) {
+          existing.grid = grid;
+          if (extra) existing.message = extra;
+          existing.receivedAt = new Date().toISOString();
+        } else {
+          this.state.host.chasers.unshift({
+            callsign: chaserCall,
+            baseCall: baseCall,
+            grid: grid,
+            message: extra,
+            receivedAt: new Date().toISOString(),
+            status: 'waiting'
+          });
+          if (isLive) {
+            this.playChirp('rx');
+            this.showToast(`🎙️ Chaser check-in: ${chaserCall} (${grid})`, 'info');
+          }
+        }
+        this.renderHostHud();
+      }
+      // (d) Bot time / stay notice: "Off the air in <X> minutes, max <Y> minutes"
+      else if (/Off the air in\s+(\d+)\s+minutes/i.test(text)) {
+        const match = text.match(/Off the air in\s+(\d+)\s+minutes/i);
+        const mins = parseInt(match[1], 10);
+        this.state.host.expiresAt = Date.now() + mins * 60 * 1000;
+        this.renderHostHud();
+      }
+      // (e) Bot op complete notice: "Op complete: <X> QSOs, <Y> pts. aprsota.org/..."
+      else if (/Op complete:\s*(\d+)\s*QSOs,\s*(\d+)\s*pts/i.test(text)) {
+        const match = text.match(/Op complete:\s*(\d+)\s*QSOs,\s*(\d+)\s*pts/i);
+        this.state.host.status = 'ended';
+        this.state.host.qsos = parseInt(match[1], 10);
+        this.state.host.points = parseInt(match[2], 10);
+        if (isLive) this.showToast(`🏁 Activation complete: ${this.state.host.qsos} QSOs, ${this.state.host.points} pts`, 'info');
+        this.renderHostHud();
+      }
+    }
+  }
+
+  updateHostWatchdogAndTimer() {
+    // 1. iGate Beacon elapsed timer
+    if (this.dom.hostWatchdogStatus || this.dom.stripBeaconTime) {
+      if (!this.state.host.lastBeaconAt) {
+        if (this.dom.hostWatchdogStatus) this.dom.hostWatchdogStatus.textContent = 'Last beacon: Never';
+        if (this.dom.stripBeaconTime) this.dom.stripBeaconTime.textContent = '📡 Beacon: --';
+      } else {
+        const elapsedSec = Math.floor((Date.now() - this.state.host.lastBeaconAt) / 1000);
+        const elapsedStr = elapsedSec < 60 ? `${elapsedSec}s ago` : `${Math.floor(elapsedSec / 60)}m ago`;
+        if (this.dom.hostWatchdogStatus) this.dom.hostWatchdogStatus.textContent = `Last beacon: ${elapsedStr}`;
+        if (this.dom.stripBeaconTime) this.dom.stripBeaconTime.textContent = `📡 Beacon: ${elapsedStr}`;
+      }
+    }
+
+    // 2. Op Countdown / Window timer
+    let timeStr = '--';
+    let stripTimeStr = '⏱ --m';
+
+    if (this.state.host.status === 'on_air' && this.state.host.expiresAt) {
+      const remainingSec = Math.max(0, Math.floor((this.state.host.expiresAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      timeStr = `${mins}m`;
+      stripTimeStr = `⏱ ${mins}m`;
+    } else if (this.state.host.status === 'pending' && this.state.host.pendingBeaconExpiresAt) {
+      const remainingSec = Math.max(0, Math.floor((this.state.host.pendingBeaconExpiresAt - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      timeStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      stripTimeStr = `⏱ ${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    }
+
+    if (this.dom.hostHudTimeLeft) this.dom.hostHudTimeLeft.textContent = timeStr;
+    if (this.dom.stripTimeLeft) this.dom.stripTimeLeft.textContent = stripTimeStr;
+  }
+
+  renderHostHud() {
+    const host = this.state.host;
+
+    // Status pill
+    if (this.dom.hostStatusPill) {
+      this.dom.hostStatusPill.className = `host-status-pill ${host.status}`;
+    }
+    if (this.dom.hostStatusText) {
+      const statusLabels = {
+        off: 'OFF AIR',
+        pending: 'BEACON PENDING',
+        on_air: 'ON AIR',
+        ended: 'ENDED'
+      };
+      this.dom.hostStatusText.textContent = statusLabels[host.status] || 'OFF AIR';
+    }
+
+    // Top Bar indicator
+    if (this.dom.hostTopBadge) {
+      const topBadges = {
+        off: 'OFF',
+        pending: 'PEND',
+        on_air: 'ON AIR',
+        ended: 'END'
+      };
+      this.dom.hostTopBadge.textContent = topBadges[host.status] || 'OFF';
+      this.dom.hostTopBadge.className = `spots-indicator-badge ${host.status === 'on_air' ? 'spots-pulse' : ''}`;
+    }
+
+    // Op # & Description
+    if (this.dom.hostHudOpNum) {
+      this.dom.hostHudOpNum.textContent = host.opNumber ? `Op #${host.opNumber}` : 'Op --';
+    }
+    if (this.dom.hostHudDesc) {
+      this.dom.hostHudDesc.textContent = host.description || (
+        host.status === 'off' ? "Ready to go on the air. Tap 'Start Op' below to begin an activation." :
+        host.status === 'pending' ? 'Waiting for initial position beacon on RF to go on the air...' :
+        'APRSOTA Activation in progress'
+      );
+    }
+
+    // Meta grid
+    if (this.dom.hostHudQsos) this.dom.hostHudQsos.textContent = host.qsos;
+    if (this.dom.hostHudPoints) this.dom.hostHudPoints.textContent = host.points;
+    if (this.dom.hostHudGrid) this.dom.hostHudGrid.textContent = host.grid || '--';
+
+    // Button states
+    const isOperating = host.status === 'on_air';
+    const isPending = host.status === 'pending';
+    const isEnded = host.status === 'ended';
+    const isOff = host.status === 'off';
+
+    if (this.dom.btnHostStartOp) this.dom.btnHostStartOp.disabled = isOperating || isPending;
+    if (this.dom.btnHostStay) this.dom.btnHostStay.disabled = !isOperating;
+    if (this.dom.btnHostChasers) this.dom.btnHostChasers.disabled = !isOperating;
+    if (this.dom.btnHostBlast) this.dom.btnHostBlast.disabled = !isOperating;
+    if (this.dom.btnHostTime) this.dom.btnHostTime.disabled = !isOperating;
+    if (this.dom.btnHostEndOp) this.dom.btnHostEndOp.disabled = isOff || isEnded;
+
+    // Badges & Counters
+    const waitingChasers = host.chasers.filter(c => c.status === 'waiting');
+    if (this.dom.hostTabBadge) {
+      this.dom.hostTabBadge.textContent = host.status === 'on_air' ? (waitingChasers.length || 'ON') : host.status.toUpperCase();
+    }
+    if (this.dom.chaserQueueCount) {
+      this.dom.chaserQueueCount.textContent = waitingChasers.length;
+    }
+
+    // Update timers
+    this.updateHostWatchdogAndTimer();
+
+    // Render Chaser Queue and Strip
+    this.renderChaserQueue();
+    this.renderChatHudStrip();
+  }
+
+  renderChaserQueue() {
+    if (!this.dom.chaserQueueList) return;
+
+    if (this.state.host.chasers.length === 0) {
+      this.dom.chaserQueueList.innerHTML = `
+        <div class="empty-state-card" style="padding: 16px 12px; text-align: center; color: var(--text-dim); font-size: 13px;">
+          No chasers waiting. Chasers contacting you via APRSOTA will appear here automatically.
+        </div>
+      `;
+      return;
+    }
+
+    this.dom.chaserQueueList.innerHTML = this.state.host.chasers.map(chaser => {
+      const isConfirmed = chaser.status === 'confirmed';
+      return `
+        <div class="chaser-queue-card ${isConfirmed ? 'qsl-confirmed' : ''}">
+          <div class="chaser-card-header">
+            <span class="chaser-callsign">${this.escapeHtml(chaser.callsign)}</span>
+            <span class="chaser-badge ${isConfirmed ? 'confirmed' : 'waiting'}">
+              ${isConfirmed ? '✓ QSL CONFIRMED' : 'WAITING'}
+            </span>
+          </div>
+          <div class="chaser-meta-row">
+            <span class="chaser-grid-tag">📍 ${this.escapeHtml(chaser.grid || '----')}</span>
+            <span class="chaser-time">${this.formatTime(chaser.receivedAt)}</span>
+          </div>
+          ${chaser.message ? `<div class="chaser-msg">${this.escapeHtml(chaser.message)}</div>` : ''}
+          ${!isConfirmed ? `
+            <button type="button" class="btn-qsl-chaser" data-callsign="${this.escapeHtml(chaser.callsign)}">
+              <span>⚡</span> 1-TAP QSL (@${this.escapeHtml(chaser.baseCall)})
+            </button>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  renderChatHudStrip() {
+    if (!this.dom.chatHostHudStrip) return;
+    const host = this.state.host;
+
+    // Strip is visible when ON AIR or PENDING
+    const showStrip = host.status === 'on_air' || host.status === 'pending';
+    if (!showStrip) {
+      this.dom.chatHostHudStrip.classList.add('hidden');
+      return;
+    }
+
+    this.dom.chatHostHudStrip.classList.remove('hidden');
+
+    if (this.dom.stripStatusPill) {
+      this.dom.stripStatusPill.className = `hud-strip-pill ${host.status}`;
+      this.dom.stripStatusPill.textContent = host.status === 'pending' ? 'BEACON PENDING' : 'ON AIR';
+    }
+    if (this.dom.stripOpNumber) {
+      this.dom.stripOpNumber.textContent = host.opNumber ? `Op #${host.opNumber}` : 'Op --';
+    }
+    if (this.dom.stripQsosCount) {
+      this.dom.stripQsosCount.textContent = `🏆 ${host.qsos} QSOs`;
+    }
+
+    // Render waiting chips
+    if (this.dom.stripChaserQueue) {
+      const waiting = host.chasers.filter(c => c.status === 'waiting');
+      if (waiting.length === 0) {
+        this.dom.stripChaserQueue.innerHTML = '<span style="font-size: 11px; color: var(--text-dim); margin-left: 6px;">No waiting chasers</span>';
+      } else {
+        this.dom.stripChaserQueue.innerHTML = waiting.map(c => `
+          <button type="button" class="chaser-queue-chip" data-callsign="${this.escapeHtml(c.callsign)}" title="1-Tap QSL with @${this.escapeHtml(c.baseCall)}">
+            <span>⚡</span> @${this.escapeHtml(c.baseCall)} QSL
+          </button>
+        `).join('');
+      }
+    }
+  }
+
+  qslChaser(callsign) {
+    if (!callsign) return;
+    const baseCall = callsign.split('-')[0].toUpperCase();
+    const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
+
+    // 1. Locate or create thread with the OTA bot
+    let botConv = this.state.conversations.find(c =>
+      c.thread_key.toUpperCase() === botCall ||
+      c.thread_key.toUpperCase() === 'APRSOTA' ||
+      c.thread_key.toUpperCase() === 'OTA'
+    );
+
+    if (!botConv) {
+      botConv = {
+        thread_key: botCall,
+        thread_kind: 'dm',
+        alias: 'APRS OTA Bot',
+        participant_count: 1
+      };
+      this.state.conversations.unshift(botConv);
+    }
+
+    // 2. Select the conversation thread
+    this.selectConversation(botConv);
+
+    // 3. Prepopulate message input with "@<CHASER> QSL "
+    const qslPrefix = `@${baseCall} QSL `;
+    this.dom.inputMessage.value = qslPrefix;
+    this.updateCharMeter();
+
+    // 4. Close drawer on small screens / tablets so message feed & composer are visible
+    if (window.innerWidth <= 768) {
+      this.dom.drawer.classList.add('closed');
+    }
+
+    // 5. Focus input and place cursor at end
+    this.dom.inputMessage.focus();
+    const len = this.dom.inputMessage.value.length;
+    if (typeof this.dom.inputMessage.setSelectionRange === 'function') {
+      this.dom.inputMessage.setSelectionRange(len, len);
+    }
+
+    this.showToast(`Ready to QSL @${baseCall}. Add comments or tap TX.`, 'info');
+  }
+
+  async sendBotCommand(text) {
+    if (!this.state.isAuthenticated) {
+      this.openLoginModal();
+      return;
+    }
+    const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
+
+    let botConv = this.state.conversations.find(c =>
+      c.thread_key.toUpperCase() === botCall ||
+      c.thread_key.toUpperCase() === 'APRSOTA' ||
+      c.thread_key.toUpperCase() === 'OTA'
+    );
+    if (!botConv) {
+      botConv = {
+        thread_key: botCall,
+        thread_kind: 'dm',
+        alias: 'APRS OTA Bot',
+        participant_count: 1
+      };
+      this.state.conversations.unshift(botConv);
+    }
+    this.selectConversation(botConv);
+
+    this.dom.inputMessage.value = text;
+    this.updateCharMeter();
+    await this.handleSendMessage();
+  }
+
+  async fetchHostOpStatus() {
+    if (!this.state.stationCallsign || this.state.stationCallsign === 'GRAYWOLF') return;
+    try {
+      const baseCall = this.state.stationCallsign.split('-')[0].toUpperCase();
+      const res = await fetch(`/api/ota/operators/${encodeURIComponent(baseCall)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.on_air && data.on_air.state === 'on_air') {
+          const onAir = data.on_air;
+          this.state.host.status = 'on_air';
+          this.state.host.opNumber = onAir.number;
+          this.state.host.grid = onAir.grid || this.state.host.grid;
+          this.state.host.description = onAir.description || this.state.host.description;
+          this.state.host.qsos = onAir.qsos || 0;
+          this.state.host.points = onAir.points || 0;
+          if (onAir.on_air_at) this.state.host.startedAt = Date.parse(onAir.on_air_at);
+          if (onAir.expires_at) this.state.host.expiresAt = Date.parse(onAir.expires_at);
+          this.renderHostHud();
+        }
+      }
+    } catch {
+      // Non-critical background status sync
+    }
   }
 }
 

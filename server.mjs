@@ -278,6 +278,69 @@ function broadcastSSE(data) {
   }
 }
 
+// Mock APRSOTA Bot Simulator State
+let mockOtaBotState = {
+  hostOpActive: false,
+  hostOpNumber: 47,
+  pendingBeacon: false,
+  description: '',
+  startedAt: null,
+  qsos: 0,
+  points: 0
+};
+
+function simulateOtaBotMessage(text, delayMs = 1200) {
+  setTimeout(() => {
+    const botCall = 'APRSOTA';
+    const msgId = Date.now() + Math.floor(Math.random() * 1000);
+    const inMsg = {
+      id: msgId,
+      thread_key: botCall,
+      thread_kind: 'dm',
+      from_call: botCall,
+      to_call: mockStore.station.callsign,
+      direction: 'in',
+      text: text,
+      received_at: new Date().toISOString(),
+      status: 'received',
+      channel: 1,
+      source: 'rf',
+      unread: true
+    };
+    mockStore.messages.push(inMsg);
+    mockStore.status.rx_packets += 1;
+
+    let conv = mockStore.conversations.find(c => c.thread_key.toUpperCase() === botCall);
+    if (!conv) {
+      conv = {
+        thread_key: botCall,
+        thread_kind: 'dm',
+        alias: 'APRS OTA Bot',
+        last_snippet: text,
+        last_sender_call: botCall,
+        last_at: inMsg.received_at,
+        unread_count: 1,
+        total_count: 1,
+        participant_count: 1,
+        archived: false
+      };
+      mockStore.conversations.unshift(conv);
+    } else {
+      conv.last_snippet = text;
+      conv.last_sender_call = botCall;
+      conv.last_at = inMsg.received_at;
+      conv.total_count += 1;
+      conv.unread_count += 1;
+    }
+
+    broadcastSSE({
+      id: inMsg.id,
+      kind: 'in',
+      message: inMsg
+    });
+  }, delayMs);
+}
+
 // --- Body Parser Helper ---
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -356,6 +419,22 @@ async function handleMockApi(req, res, pathname, query) {
       callsign: beacon.callsign,
       timestamp: new Date().toISOString()
     });
+
+    if (mockOtaBotState.pendingBeacon) {
+      mockOtaBotState.pendingBeacon = false;
+      mockOtaBotState.hostOpActive = true;
+      mockOtaBotState.startedAt = new Date().toISOString();
+      const baseCall = mockStore.station.callsign.split('-')[0];
+      simulateOtaBotMessage(`${mockStore.station.callsign} is on the air from FN00al. aprsota.org/${baseCall}/ops/${mockOtaBotState.hostOpNumber}`, 1200);
+
+      // Simulate incoming chasers arriving over RF after a realistic short delay
+      setTimeout(() => {
+        simulateOtaBotMessage('DE K3SAR-7 FN09lv greetings from summit', 500);
+      }, 4000);
+      setTimeout(() => {
+        simulateOtaBotMessage('DE N0CALL-9 FN00xk 599 mike portable', 500);
+      }, 9000);
+    }
 
     res.writeHead(200);
     return res.end(JSON.stringify({ status: 'sent' }));
@@ -481,6 +560,34 @@ async function handleMockApi(req, res, pathname, query) {
         message: newMsg
       });
     }, 1500);
+
+    // Mock APRSOTA Bot Logic
+    if (toCall === 'APRSOTA' || toCall === 'OTA') {
+      const trimmedText = payload.text.trim();
+      if (/^(HOST|QRV)\b/i.test(trimmedText)) {
+        mockOtaBotState.pendingBeacon = true;
+        mockOtaBotState.description = trimmedText.replace(/^(HOST|QRV)\s*/i, '');
+        simulateOtaBotMessage('Send a position report within 5 mins to go on the air', 1000);
+      } else if (/^QSL\b/i.test(trimmedText) || /^@[A-Za-z0-9/-]+\s+QSL\b/i.test(trimmedText)) {
+        const match = trimmedText.match(/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))/i);
+        const chaserCall = match ? (match[1] || match[2]).toUpperCase() : 'STATION';
+        mockOtaBotState.qsos += 1;
+        mockOtaBotState.points += 3;
+        simulateOtaBotMessage(`DE ${chaserCall} QSL thx for the contact 73`, 1200);
+      } else if (/^STAY\b/i.test(trimmedText)) {
+        simulateOtaBotMessage('Staying on the air. Off the air in 55 minutes, max 95 minutes', 1000);
+      } else if (/^(TIME|QRT\?)\b/i.test(trimmedText)) {
+        simulateOtaBotMessage('Off the air in 45 minutes, max 95 minutes. STAY adds 30 mins', 1000);
+      } else if (/^CHASERS\b/i.test(trimmedText)) {
+        simulateOtaBotMessage('K3SAR-7 N0CALL-9', 1000);
+      } else if (/^BLAST\b/i.test(trimmedText)) {
+        simulateOtaBotMessage(`BLAST ${mockStore.station.callsign}: ${trimmedText.replace(/^BLAST\s+/i, '')}`, 1000);
+      } else if (/^(DONE|QRT)\b/i.test(trimmedText)) {
+        mockOtaBotState.hostOpActive = false;
+        mockOtaBotState.pendingBeacon = false;
+        simulateOtaBotMessage(`Op complete: ${mockOtaBotState.qsos || 2} QSOs, ${mockOtaBotState.points || 6} pts. aprsota.org/${mockStore.station.callsign.split('-')[0]}`, 1200);
+      }
+    }
 
     res.writeHead(202);
     return res.end(JSON.stringify(newMsg));
@@ -933,6 +1040,78 @@ async function handleOtaApi(req, res, pathname, query) {
       upstreamReq.end();
     } catch (err) {
       console.error('[OTA DISPATCH ERROR]', err);
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // Operator Info & Live Op status: GET /api/ota/operators/:callsign
+  const operatorMatch = pathname.match(/^\/api\/ota\/operators\/([A-Za-z0-9_-]+)$/);
+  if (operatorMatch) {
+    const opCall = operatorMatch[1].toUpperCase();
+    if (isMock) {
+      res.writeHead(200);
+      return res.end(JSON.stringify({
+        callsign: opCall,
+        first_heard_at: new Date(Date.now() - 30 * 86400000).toISOString(),
+        totals: { points: 142, qsos: 48, ops_hosted: 12 },
+        on_air: mockOtaBotState.hostOpActive ? {
+          callsign: opCall,
+          station: mockStore.station.callsign,
+          number: mockOtaBotState.hostOpNumber,
+          state: 'on_air',
+          description: mockOtaBotState.description || 'Portable Activation',
+          grid: 'FN00al',
+          position: { lat: 40.4414, lon: -80.0078 },
+          country: { code: 'US', name: 'United States of America' },
+          water: null,
+          on_air_at: mockOtaBotState.startedAt || new Date().toISOString(),
+          expires_at: new Date(Date.now() + 55 * 60 * 1000).toISOString(),
+          qsos: mockOtaBotState.qsos,
+          points: mockOtaBotState.points,
+          url: `https://aprsota.org/${opCall}/ops/${mockOtaBotState.hostOpNumber}`
+        } : null
+      }));
+    }
+
+    const config = loadConfig();
+    const token = (config.aprsota_token || process.env.APRSOTA_TOKEN || '').trim();
+    if (!token) {
+      res.writeHead(200);
+      return res.end(JSON.stringify({ callsign: opCall, on_air: null }));
+    }
+
+    try {
+      const options = {
+        hostname: 'aprsota.org',
+        port: 443,
+        path: `/api/v1/operators/${encodeURIComponent(opCall)}`,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'User-Agent': 'Graywolf-Tablet-Client/1.0 (amateur-radio)',
+          'OTA-User': config.client_uuid || 'graywolf-terminal',
+          'Accept': 'application/json'
+        },
+        timeout: 8000
+      };
+
+      const upstreamReq = https.request(options, upstreamRes => {
+        let body = '';
+        upstreamRes.on('data', chunk => { body += chunk; });
+        upstreamRes.on('end', () => {
+          res.writeHead(upstreamRes.statusCode || 200);
+          res.end(body);
+        });
+      });
+      upstreamReq.on('error', err => {
+        res.writeHead(502);
+        res.end(JSON.stringify({ error: err.message }));
+      });
+      upstreamReq.on('timeout', () => upstreamReq.destroy(new Error('Timeout')));
+      upstreamReq.end();
+    } catch (err) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));
     }

@@ -184,8 +184,134 @@ if (test3 !== '@K3NG 599 from Pittsburgh ') throw new Error(`Swap test failed: g
 
 console.log('✓ Callsign prepend and prefix swap tests passed cleanly');
 
+console.log('\nTesting 14: Host / Activation Assistant HUD Lifecycle & 1-Tap QSL');
+
+// 1. Check initial operator endpoint
+const opRes = await fetch(`${baseUrl}/api/ota/operators/GRAYWOLF`);
+if (!opRes.ok) throw new Error(`Operator endpoint failed: ${opRes.status}`);
+const opData = await opRes.json();
+console.log('✓ Operator data retrieved:', opData.callsign);
+
+// 2. Host starts activation: send HOST to APRSOTA
+console.log('-> Sending HOST command to APRSOTA...');
+const hostMsgRes = await fetch(`${baseUrl}/api/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    to: 'APRSOTA',
+    text: 'HOST POTA K-1234',
+    client_id: 'test-host-1'
+  })
+});
+if (!hostMsgRes.ok) throw new Error(`Sending HOST failed: ${hostMsgRes.status}`);
+
+// Wait for mock bot reply: "Send a position report within 5 mins to go on the air"
+await new Promise(r => setTimeout(r, 1300));
+const botThreadRes = await fetch(`${baseUrl}/api/messages?thread_kind=dm&thread_key=APRSOTA`);
+const botMessages = await botThreadRes.json();
+const beaconPrompt = botMessages.changes.find(m => /Send a position report within 5 mins/i.test(m.message ? m.message.text : m.text));
+if (!beaconPrompt) {
+  throw new Error('Bot beacon prompt message not found in thread');
+}
+console.log('✓ APRSOTA Bot beacon prompt received:', beaconPrompt.message ? beaconPrompt.message.text : beaconPrompt.text);
+
+// 3. Station transmits position report (1-tap beacon trigger)
+console.log('-> Transmitting position beacon to go on the air...');
+const beaconSendRes = await fetch(`${baseUrl}/api/beacons/1/send`, { method: 'POST' });
+if (!beaconSendRes.ok) throw new Error(`Beacon trigger failed: ${beaconSendRes.status}`);
+
+// Wait for on-air announcement and incoming chasers
+await new Promise(r => setTimeout(r, 1400));
+const onAirCheckRes = await fetch(`${baseUrl}/api/messages?thread_kind=dm&thread_key=APRSOTA`);
+const onAirMessages = await onAirCheckRes.json();
+const onAirAnnounce = onAirMessages.changes.find(m => /is on the air from/i.test(m.message ? m.message.text : m.text));
+if (!onAirAnnounce) {
+  throw new Error('Bot on-air announcement not found');
+}
+console.log('✓ APRSOTA Bot on-air announcement received:', onAirAnnounce.message ? onAirAnnounce.message.text : onAirAnnounce.text);
+
+// Wait for simulated chaser arrival (scheduled at 4000ms in server.mjs)
+console.log('-> Waiting for chaser pileup relay...');
+await new Promise(r => setTimeout(r, 3200));
+const chaserThreadRes = await fetch(`${baseUrl}/api/messages?thread_kind=dm&thread_key=APRSOTA`);
+const chaserMessages = await chaserThreadRes.json();
+const chaserRelay = chaserMessages.changes.find(m => /^DE\s+K3SAR-7/i.test(m.message ? m.message.text : m.text));
+if (!chaserRelay) {
+  throw new Error('Chaser K3SAR-7 relay not found in messages');
+}
+const relayText = chaserRelay.message ? chaserRelay.message.text : chaserRelay.text;
+console.log('✓ APRSOTA Bot relayed chaser:', relayText);
+
+// 4. Test 1-Tap QSL template generation logic
+const chaserMatch = relayText.match(/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i);
+if (!chaserMatch) throw new Error('Chaser relay format did not match expected regex');
+const chaserCall = chaserMatch[1].toUpperCase();
+const chaserBase = chaserCall.split('-')[0];
+const qslTemplate = `@${chaserBase} QSL `;
+console.log(`✓ 1-Tap QSL generated template for ${chaserCall}: "${qslTemplate}"`);
+if (qslTemplate !== '@K3SAR QSL ') {
+  throw new Error(`Unexpected 1-tap QSL template: expected "@K3SAR QSL ", got "${qslTemplate}"`);
+}
+
+// 5. Host sends 1-tap QSL response with report
+console.log('-> Host transmitting QSL with signal report...');
+const qslSendRes = await fetch(`${baseUrl}/api/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    to: 'APRSOTA',
+    text: `${qslTemplate}599 73`,
+    client_id: 'test-qsl-1'
+  })
+});
+if (!qslSendRes.ok) throw new Error(`Sending QSL failed: ${qslSendRes.status}`);
+
+// Wait for bot/chaser QSL acknowledgment
+await new Promise(r => setTimeout(r, 1400));
+const qslAckRes = await fetch(`${baseUrl}/api/messages?thread_kind=dm&thread_key=APRSOTA`);
+const qslAckMessages = await qslAckRes.json();
+const qslAck = qslAckMessages.changes.find(m => /DE K3SAR QSL/i.test(m.message ? m.message.text : m.text));
+if (!qslAck) throw new Error('Chaser QSL acknowledgment not received');
+console.log('✓ Chaser QSL confirmation received:', qslAck.message ? qslAck.message.text : qslAck.text);
+
+// 6. Test tactical host queries: TIME, STAY, BLAST, and DONE
+console.log('-> Testing tactical queries (TIME, STAY, BLAST, DONE)...');
+await fetch(`${baseUrl}/api/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ to: 'APRSOTA', text: 'TIME', client_id: 'test-time-1' })
+});
+await new Promise(r => setTimeout(r, 1200));
+
+await fetch(`${baseUrl}/api/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ to: 'APRSOTA', text: 'STAY', client_id: 'test-stay-1' })
+});
+await new Promise(r => setTimeout(r, 1200));
+
+await fetch(`${baseUrl}/api/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ to: 'APRSOTA', text: 'BLAST QSY 14.060 CW in 5m', client_id: 'test-blast-1' })
+});
+await new Promise(r => setTimeout(r, 1200));
+
+await fetch(`${baseUrl}/api/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ to: 'APRSOTA', text: 'DONE', client_id: 'test-done-1' })
+});
+await new Promise(r => setTimeout(r, 1400));
+
+const finalMessagesRes = await fetch(`${baseUrl}/api/messages?thread_kind=dm&thread_key=APRSOTA`);
+const finalMessages = await finalMessagesRes.json();
+const opCompleteMsg = finalMessages.changes.find(m => /Op complete:/i.test(m.message ? m.message.text : m.text));
+if (!opCompleteMsg) throw new Error('Bot "Op complete" message not found');
+console.log('✓ Activation finalized successfully:', opCompleteMsg.message ? opCompleteMsg.message.text : opCompleteMsg.text);
+
 console.log('\n=========================================');
-console.log('🎉 ALL 13 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 14 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
