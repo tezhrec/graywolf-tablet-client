@@ -34,6 +34,13 @@ class GraywolfClient {
       botCallsign: 'APRSOTA',
       activeDrawerView: 'chats',
       widescreenRadarOpen: false,
+      chasedOps: (() => {
+        try {
+          return JSON.parse(localStorage.getItem('gw_chased_ops') || '{}');
+        } catch {
+          return {};
+        }
+      })(),
 
       // APRS OTA Host / Activation Assistant State
       host: {
@@ -490,8 +497,14 @@ class GraywolfClient {
       const btn = e.target.closest('.btn-chase');
       if (btn) {
         const call = btn.dataset.callsign;
-        const spot = this.state.spots.find(s => s.callsign === call);
-        this.handleChase(call, spot);
+        const opNum = btn.dataset.opNumber;
+        const opKey = btn.dataset.opKey;
+        const spot = this.state.spots.find(s => {
+          const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+          if (opNum && (s.number == opNum || s.op == opNum)) return true;
+          return sBase === call || (s.callsign && s.callsign.toUpperCase() === call);
+        });
+        this.handleChase(call, spot, opKey);
       }
     };
     this.dom.spotsList.addEventListener('click', handleSpotListClick);
@@ -1505,6 +1518,22 @@ class GraywolfClient {
     };
     this.state.messages.push(optimisticMsg);
     this.processHostMessage(optimisticMsg, true);
+
+    // Auto-mark OP as chased if transmitting @CALLSIGN in message
+    const atMatch = text.match(/^@([A-Za-z0-9/-]+)/);
+    if (atMatch) {
+      const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
+      const matchingSpot = this.state.spots?.find(s => {
+        const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+        return sBase === chasedTarget;
+      });
+      if (matchingSpot) {
+        const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
+        const opKey = rawOpNum !== null ? `${chasedTarget}:${rawOpNum}` : `${chasedTarget}:current`;
+        this.markOpChased(opKey, { baseCall: chasedTarget, opNumber: rawOpNum });
+      }
+    }
+
     this.renderMessages();
 
     try {
@@ -2061,10 +2090,33 @@ class GraywolfClient {
     }
   }
 
+  isOpChased(opKey) {
+    if (!opKey) return false;
+    return Boolean(this.state.chasedOps && this.state.chasedOps[opKey]);
+  }
+
+  markOpChased(opKey, details = {}) {
+    if (!opKey) return;
+    if (!this.state.chasedOps) this.state.chasedOps = {};
+    this.state.chasedOps[opKey] = {
+      chasedAt: new Date().toISOString(),
+      ...details
+    };
+    try {
+      localStorage.setItem('gw_chased_ops', JSON.stringify(this.state.chasedOps));
+    } catch (err) {
+      console.warn('[STORAGE] Failed to persist chased ops:', err);
+    }
+    this.renderSpots();
+  }
+
   createSpotCardHtml(op, distObj) {
     const baseCall = this.escapeHtml((op.callsign || 'N0CALL').toUpperCase());
     const station = this.escapeHtml(op.station || op.callsign || baseCall);
-    const opNumber = op.number ? `Op #${op.number}` : (op.op ? `Op #${op.op}` : '');
+    const rawOpNum = (op.number !== undefined && op.number !== null) ? op.number : (op.op !== undefined && op.op !== null ? op.op : null);
+    const opNumber = rawOpNum !== null ? `Op #${rawOpNum}` : '';
+    const opKey = rawOpNum !== null ? `${baseCall}:${rawOpNum}` : (op.on_air_at || op.started_at ? `${baseCall}:${op.on_air_at || op.started_at}` : `${baseCall}:current`);
+    const isWorked = this.isOpChased(opKey);
     const ref = this.escapeHtml(op.reference || '');
     const description = this.escapeHtml(op.description || op.name || op.comment || (op.country?.name ? `${op.country.name}${op.water ? ` · ${op.water.name}` : ''}` : 'APRSOTA Activation'));
     const grid = this.escapeHtml(op.grid || '');
@@ -2108,12 +2160,13 @@ class GraywolfClient {
       : '';
 
     return `
-      <div class="spot-card" data-callsign="${baseCall}">
+      <div class="spot-card ${isWorked ? 'worked' : ''}" data-callsign="${baseCall}">
         <div class="spot-card-header">
           <div class="spot-call-group">
             <span class="spot-callsign">${baseCall}</span>
             ${station !== baseCall ? `<span class="spot-station-tag">(${station})</span>` : ''}
             ${opNumber ? `<span class="spot-op-num">${opNumber}</span>` : ''}
+            ${isWorked ? `<span class="spot-badge worked" title="Op worked/chased in this activation">✓ WORKED</span>` : ''}
             ${ref ? `<span class="spot-badge ref">${ref}</span>` : ''}
           </div>
           ${timerBadgeHtml}
@@ -2127,17 +2180,22 @@ class GraywolfClient {
           <span class="spot-stats">${qsos} QSOs · ${points} pts</span>
         </div>
         <div class="spot-actions-row">
-          <button type="button" class="btn-chase" data-callsign="${baseCall}" data-station="${station}">
-            <span>⚡</span> <span>1-TAP CHASE @${baseCall}</span>
+          <button type="button" class="btn-chase ${isWorked ? 'worked' : ''}" data-callsign="${baseCall}" data-station="${station}" data-op-number="${rawOpNum ?? ''}" data-op-key="${opKey}">
+            <span>${isWorked ? '✓' : '⚡'}</span> <span>${isWorked ? `WORKED (${opNumber || 'Op Worked'})` : `1-TAP CHASE @${baseCall}`}</span>
           </button>
         </div>
       </div>
     `;
   }
 
-  handleChase(rawCallsign, spot) {
+  handleChase(rawCallsign, spot, directOpKey) {
     const baseCall = (rawCallsign || '').split('-')[0].toUpperCase();
     const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
+
+    // Mark OP as chased/worked
+    const rawOpNum = spot ? (spot.number ?? spot.op ?? null) : null;
+    const opKey = directOpKey || (rawOpNum !== null ? `${baseCall}:${rawOpNum}` : `${baseCall}:current`);
+    this.markOpChased(opKey, { baseCall, opNumber: rawOpNum });
 
     // 1. Locate or create thread with the OTA bot
     let botConv = this.state.conversations.find(c =>
@@ -2459,8 +2517,8 @@ class GraywolfClient {
           </div>
           ${chaser.message ? `<div class="chaser-msg">${this.escapeHtml(chaser.message)}</div>` : ''}
           ${!isConfirmed ? `
-            <button type="button" class="btn-qsl-chaser" data-callsign="${this.escapeHtml(chaser.callsign)}">
-              <span>⚡</span> 1-TAP QSL (@${this.escapeHtml(chaser.baseCall)})
+            <button type="button" class="btn-qsl-chaser ${chaser.qslDrafted ? 'worked' : ''}" data-callsign="${this.escapeHtml(chaser.callsign)}">
+              <span>${chaser.qslDrafted ? '✓' : '⚡'}</span> ${chaser.qslDrafted ? `QSL DRAFTED (@${this.escapeHtml(chaser.baseCall)})` : `1-TAP QSL (@${this.escapeHtml(chaser.baseCall)})`}
             </button>
           ` : ''}
         </div>
@@ -2547,6 +2605,13 @@ class GraywolfClient {
     const len = this.dom.inputMessage.value.length;
     if (typeof this.dom.inputMessage.setSelectionRange === 'function') {
       this.dom.inputMessage.setSelectionRange(len, len);
+    }
+
+    // 6. Mark chaser card in HUD queue as drafted
+    const chaser = this.state.host.chasers.find(c => c.callsign === callsign || c.baseCall === baseCall);
+    if (chaser && chaser.status !== 'confirmed') {
+      chaser.qslDrafted = true;
+      this.renderHostChaserQueue();
     }
 
     this.showToast(`Ready to QSL @${baseCall}. Add comments or tap TX.`, 'info');

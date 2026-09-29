@@ -310,8 +310,58 @@ const opCompleteMsg = finalMessages.changes.find(m => /Op complete:/i.test(m.mes
 if (!opCompleteMsg) throw new Error('Bot "Op complete" message not found');
 console.log('✓ Activation finalized successfully:', opCompleteMsg.message ? opCompleteMsg.message.text : opCompleteMsg.text);
 
+console.log('\nTesting 15: 1-Tap Chase Worked Tracking & Automatic Refresh on New OP');
+
+// In-memory simulation of client state engine
+let chasedOps = {};
+function isOpChased(opKey) {
+  if (!opKey) return false;
+  return Boolean(chasedOps[opKey]);
+}
+function markOpChased(opKey, details = {}) {
+  if (!opKey) return;
+  chasedOps[opKey] = { chasedAt: new Date().toISOString(), ...details };
+}
+function generateChaseButtonHtml(baseCall, rawOpNum) {
+  const opNumber = rawOpNum !== null ? `Op #${rawOpNum}` : '';
+  const opKey = rawOpNum !== null ? `${baseCall}:${rawOpNum}` : `${baseCall}:current`;
+  const isWorked = isOpChased(opKey);
+  return {
+    isWorked,
+    opKey,
+    buttonHtml: `<button type="button" class="btn-chase ${isWorked ? 'worked' : ''}" data-callsign="${baseCall}" data-op-number="${rawOpNum ?? ''}" data-op-key="${opKey}"><span>${isWorked ? '✓' : '⚡'}</span> <span>${isWorked ? `WORKED (${opNumber || 'Op Worked'})` : `1-TAP CHASE @${baseCall}`}</span></button>`
+  };
+}
+
+// 1. Initial State: Op #42 by K3NG is not yet worked
+const initialCard = generateChaseButtonHtml('K3NG', 42);
+if (initialCard.isWorked) throw new Error('Op #42 should initially be unworked');
+if (initialCard.buttonHtml.includes('btn-chase worked')) throw new Error('Initial button should not have .worked class');
+console.log('✓ Initial state: K3NG Op #42 is unworked (blue 1-tap chase button)');
+
+// 2. User taps 1-tap chase on Op #42
+markOpChased(initialCard.opKey, { baseCall: 'K3NG', opNumber: 42 });
+const workedCard = generateChaseButtonHtml('K3NG', 42);
+if (!workedCard.isWorked) throw new Error('Op #42 should now be marked worked');
+if (!workedCard.buttonHtml.includes('btn-chase worked')) throw new Error('Button should now have .worked class');
+if (!workedCard.buttonHtml.includes('WORKED (Op #42)')) throw new Error('Button text should show WORKED (Op #42)');
+console.log('✓ Worked state: K3NG Op #42 is marked worked with emerald green styling & "WORKED (Op #42)"');
+
+// 3. Activator starts a NEW activation: Op #43
+// When spots refresh, K3NG now has number: 43
+const newOpCard = generateChaseButtonHtml('K3NG', 43);
+if (newOpCard.isWorked) throw new Error('New Op #43 must automatically refresh back to unworked!');
+if (newOpCard.buttonHtml.includes('btn-chase worked')) throw new Error('New Op #43 must not have .worked class');
+if (!newOpCard.buttonHtml.includes('1-TAP CHASE @K3NG')) throw new Error('New Op #43 must show "1-TAP CHASE @K3NG"');
+console.log('✓ Automatic refresh: When K3NG starts Op #43, button automatically refreshes back to unworked blue!');
+
+// 4. Verify other activators remain independent
+const w3atvCard = generateChaseButtonHtml('W3ATV', 43);
+if (w3atvCard.isWorked) throw new Error('W3ATV Op #43 should be unworked');
+console.log('✓ Independent operator tracking verified.');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 14 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 15 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);

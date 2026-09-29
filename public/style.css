@@ -1628,6 +1628,12 @@ html, body {
   color: #34d399;
 }
 
+.spot-badge.worked {
+  background: rgba(16, 185, 129, 0.25);
+  border: 1px solid #10b981;
+  color: #34d399;
+}
+
 .spot-badge.sota {
   background: rgba(168, 85, 247, 0.2);
   border: 1px solid #a855f7;
@@ -1723,6 +1729,22 @@ html, body {
 .btn-chase:active {
   transform: scale(0.98);
   background: linear-gradient(135deg, #0369a1, #075985);
+}
+
+.btn-chase.worked {
+  background: linear-gradient(135deg, #059669, #047857);
+  border: 1px solid #10b981;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
+  color: #ffffff;
+}
+
+.btn-chase.worked:active {
+  background: linear-gradient(135deg, #047857, #065f46);
+  transform: scale(0.98);
+}
+
+.spot-card.worked {
+  border-color: rgba(16, 185, 129, 0.45);
 }
 
 /* Widescreen Radar Panel */
@@ -2170,6 +2192,18 @@ html, body {
 }
 
 .btn-qsl-chaser:active {
+  transform: scale(0.98);
+}
+
+.btn-qsl-chaser.worked {
+  background: linear-gradient(135deg, #059669, #047857);
+  border: 1px solid #10b981;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
+  color: #ffffff;
+}
+
+.btn-qsl-chaser.worked:active {
+  background: linear-gradient(135deg, #047857, #065f46);
   transform: scale(0.98);
 }
 
