@@ -349,6 +349,14 @@ class GraywolfClient {
 
     this.dom.btnDeleteThread.addEventListener('click', () => this.handleDeleteCurrentThread());
 
+    // Callsign Chip Click inside Message Feed (auto-populate @CALLSIGN into composer)
+    this.dom.messageFeed.addEventListener('click', (e) => {
+      const chip = e.target.closest('.callsign-chip');
+      if (chip && chip.dataset.callsign) {
+        this.handleCallsignClick(chip.dataset.callsign);
+      }
+    });
+
     // Composer Input Events
     this.dom.inputMessage.addEventListener('input', () => this.updateCharMeter());
     this.dom.inputMessage.addEventListener('keydown', (e) => {
@@ -1145,7 +1153,7 @@ class GraywolfClient {
 
       bubble.innerHTML = `
         <span class="bubble-sender">${this.escapeHtml(sender)}</span>
-        <span class="bubble-text">${this.escapeHtml(msg.text || '')}</span>
+        <span class="bubble-text">${this.formatMessageText(msg.text || '')}</span>
         <div class="bubble-footer">
           ${extendedBadge}
           <span class="bubble-time">${timeStr}</span>
@@ -1157,6 +1165,48 @@ class GraywolfClient {
     });
 
     this.dom.messageFeed.scrollTop = this.dom.messageFeed.scrollHeight;
+  }
+
+  formatMessageText(rawText) {
+    if (!rawText) return '';
+    const escaped = this.escapeHtml(rawText);
+
+    // Matches standard amateur radio callsigns with optional leading @ and optional -SSID:
+    // 1-2 prefix alphanumeric chars, 1 digit (call area), 1-4 suffix letters, and optional -SSID
+    const callsignRegex = /(?:@)?\b([A-Za-z0-9]{1,2}\d[A-Za-z]{1,4}(?:-[A-Za-z0-9]{1,4})?)\b/g;
+
+    return escaped.replace(callsignRegex, (match, fullCall) => {
+      const baseCall = fullCall.split('-')[0].toUpperCase();
+      return `<button type="button" class="callsign-chip" data-callsign="${baseCall}" title="Tap to populate @${baseCall}">${match}</button>`;
+    });
+  }
+
+  handleCallsignClick(callsign) {
+    if (!callsign) return;
+    const baseCall = callsign.split('-')[0].toUpperCase();
+    const prefix = `@${baseCall} `;
+
+    let current = this.dom.inputMessage.value.trim();
+
+    if (!current) {
+      this.dom.inputMessage.value = prefix;
+    } else {
+      // If the input already begins with an @CALLSIGN prefix, swap it out
+      if (/^@[A-Za-z0-9/-]+\s*/.test(current)) {
+        current = current.replace(/^@[A-Za-z0-9/-]+\s*/, '');
+      }
+      this.dom.inputMessage.value = current.length > 0 ? `${prefix}${current} ` : prefix;
+    }
+
+    this.updateCharMeter();
+    this.dom.inputMessage.focus();
+    const len = this.dom.inputMessage.value.length;
+    if (typeof this.dom.inputMessage.setSelectionRange === 'function') {
+      this.dom.inputMessage.setSelectionRange(len, len);
+    }
+
+    this.playChirp('tx');
+    this.showToast(`Set recipient to @${baseCall}`, 'info');
   }
 
   updateCharMeter() {

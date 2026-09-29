@@ -138,8 +138,50 @@ if (mathTest.distanceMi < 55 || mathTest.distanceMi > 70 || mathTest.cardinal !=
   throw new Error(`Distance/bearing calculation unexpected: ${JSON.stringify(mathTest)}`);
 }
 
+console.log('Testing 13: Callsign Chip Regex, SSID Stripping, and Prepend Logic');
+const sampleMsg = 'W3ABC-7 is at K-1234 on 144.390. Contact K3NG or @N0CALL for info. 73!';
+const callsignRegex = /(?:@)?\b([A-Za-z0-9]{1,2}\d[A-Za-z]{1,4}(?:-[A-Za-z0-9]{1,4})?)\b/g;
+const detected = [];
+sampleMsg.replace(callsignRegex, (match, fullCall) => {
+  const baseCall = fullCall.split('-')[0].toUpperCase();
+  detected.push({ match, fullCall, baseCall });
+});
+
+console.log('✓ Detected callsigns in sample message:', detected);
+if (detected.length !== 3) {
+  throw new Error(`Expected 3 callsigns, found ${detected.length}`);
+}
+if (detected[0].baseCall !== 'W3ABC' || detected[1].baseCall !== 'K3NG' || detected[2].baseCall !== 'N0CALL') {
+  throw new Error('Callsign base extraction failed: ' + JSON.stringify(detected));
+}
+
+// Test prepend logic helper
+function simulateCallsignClick(existingInput, clickedCall) {
+  const baseCall = clickedCall.split('-')[0].toUpperCase();
+  const prefix = `@${baseCall} `;
+  let current = existingInput.trim();
+  if (!current) {
+    return prefix;
+  }
+  if (/^@[A-Za-z0-9/-]+\s*/.test(current)) {
+    current = current.replace(/^@[A-Za-z0-9/-]+\s*/, '');
+  }
+  return current.length > 0 ? `${prefix}${current} ` : prefix;
+}
+
+const test1 = simulateCallsignClick('', 'W3ABC-7');
+if (test1 !== '@W3ABC ') throw new Error(`Empty input test failed: got "${test1}"`);
+
+const test2 = simulateCallsignClick('599 from Pittsburgh', 'W3ABC-7');
+if (test2 !== '@W3ABC 599 from Pittsburgh ') throw new Error(`Prepend test failed: got "${test2}"`);
+
+const test3 = simulateCallsignClick('@W3ABC 599 from Pittsburgh', 'K3NG');
+if (test3 !== '@K3NG 599 from Pittsburgh ') throw new Error(`Swap test failed: got "${test3}"`);
+
+console.log('✓ Callsign prepend and prefix swap tests passed cleanly');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 12 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 13 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
