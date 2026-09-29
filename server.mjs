@@ -431,6 +431,7 @@ async function handleMockApi(req, res, pathname, query) {
       mockOtaBotState.pendingBeacon = false;
       mockOtaBotState.hostOpActive = true;
       mockOtaBotState.startedAt = new Date().toISOString();
+      otaNowCache.timestamp = 0;
       const baseCall = mockStore.station.callsign.split('-')[0];
       simulateOtaBotMessage(`${mockStore.station.callsign} is on the air from FN00al. aprsota.org/${baseCall}/ops/${mockOtaBotState.hostOpNumber}`, 1200);
 
@@ -574,12 +575,17 @@ async function handleMockApi(req, res, pathname, query) {
       if (/^(HOST|QRV)\b/i.test(trimmedText)) {
         mockOtaBotState.pendingBeacon = true;
         mockOtaBotState.description = trimmedText.replace(/^(HOST|QRV)\s*/i, '');
+        mockOtaBotState.qsos = 0;
+        mockOtaBotState.points = 0;
+        mockOtaBotState.hostOpNumber = (mockOtaBotState.hostOpNumber || 46) + 1;
+        otaNowCache.timestamp = 0;
         simulateOtaBotMessage('Send a position report within 5 mins to go on the air', 1000);
       } else if (/^QSL\b/i.test(trimmedText) || /^@[A-Za-z0-9/-]+\s+QSL\b/i.test(trimmedText)) {
         const match = trimmedText.match(/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))/i);
         const chaserCall = match ? (match[1] || match[2]).toUpperCase() : 'STATION';
         mockOtaBotState.qsos += 1;
         mockOtaBotState.points += 3;
+        otaNowCache.timestamp = 0;
         simulateOtaBotMessage(`DE ${chaserCall} QSL thx for the contact 73`, 1200);
       } else if (/^STAY\b/i.test(trimmedText)) {
         simulateOtaBotMessage('Staying on the air. Off the air in 55 minutes, max 95 minutes', 1000);
@@ -592,7 +598,8 @@ async function handleMockApi(req, res, pathname, query) {
       } else if (/^(DONE|QRT)\b/i.test(trimmedText)) {
         mockOtaBotState.hostOpActive = false;
         mockOtaBotState.pendingBeacon = false;
-        simulateOtaBotMessage(`Op complete: ${mockOtaBotState.qsos || 2} QSOs, ${mockOtaBotState.points || 6} pts. aprsota.org/${mockStore.station.callsign.split('-')[0]}`, 1200);
+        otaNowCache.timestamp = 0;
+        simulateOtaBotMessage(`Op complete: ${mockOtaBotState.qsos || 0} QSOs, ${mockOtaBotState.points || 0} pts. aprsota.org/${mockStore.station.callsign.split('-')[0]}`, 1200);
       }
     }
 
@@ -955,10 +962,36 @@ async function handleOtaApi(req, res, pathname, query) {
 
     // Return mock spots if in mock mode or token not yet configured
     if (isMock || !token) {
+      const baseCall = mockStore.station.callsign.split('-')[0];
+      const activeHostOp = mockOtaBotState.hostOpActive ? [{
+        callsign: baseCall,
+        station: mockStore.station.callsign,
+        number: mockOtaBotState.hostOpNumber,
+        state: 'on_air',
+        description: mockOtaBotState.description || 'Portable Activation',
+        reference: 'K-1234',
+        grid: 'FN00al',
+        position: { lat: 40.4414, lon: -80.0078 },
+        country: { code: 'US', name: 'United States of America' },
+        water: null,
+        on_air_at: mockOtaBotState.startedAt || new Date().toISOString(),
+        expires_at: new Date(Date.now() + 55 * 60 * 1000).toISOString(),
+        qsos: mockOtaBotState.qsos,
+        points: mockOtaBotState.points,
+        url: `https://aprsota.org/${baseCall}/ops/${mockOtaBotState.hostOpNumber}`
+      }] : [];
+
+      const filteredMock = MOCK_OTA_SPOTS.on_air.filter(
+        s => s.station !== mockStore.station.callsign && s.callsign !== baseCall
+      );
+
       otaNowCache = {
         timestamp: now,
         etag: '"mock-spots-etag"',
-        data: MOCK_OTA_SPOTS
+        data: {
+          ...MOCK_OTA_SPOTS,
+          on_air: [...activeHostOp, ...filteredMock]
+        }
       };
       res.setHeader('X-Cache', 'MOCK');
       res.writeHead(200);

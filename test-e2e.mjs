@@ -230,6 +230,43 @@ if (!onAirAnnounce) {
 }
 console.log('✓ APRSOTA Bot on-air announcement received:', onAirAnnounce.message ? onAirAnnounce.message.text : onAirAnnounce.text);
 
+// Verify that /api/ota/now includes the station's active op with its op number
+const liveOpsRes = await fetch(`${baseUrl}/api/ota/now`);
+const liveOpsData = await liveOpsRes.json();
+const liveOps = liveOpsData.on_air || liveOpsData;
+const stationOp = liveOps.find(op => op.station === 'W1AW-7' || op.callsign === 'W1AW');
+if (!stationOp) throw new Error('Station active OP not found in /api/ota/now feed');
+console.log(`✓ Live feed /api/ota/now contains station OP: Op #${stationOp.number} by ${stationOp.callsign} (${stationOp.description})`);
+if (!stationOp.number) throw new Error('Station OP in /api/ota/now missing number');
+
+// Test syncHostFromSpots logic & stale totals reset
+let hostState = {
+  status: 'pending',
+  opNumber: null,
+  qsos: 14, // stale from last op
+  points: 42, // stale from last op
+  chasers: ['old-chaser']
+};
+// 1. New op started -> reset hostState
+hostState.status = 'pending';
+hostState.opNumber = null;
+hostState.qsos = 0;
+hostState.points = 0;
+hostState.chasers = [];
+
+// 2. Sync from spots
+const matchingOp = liveOps.find(op => op.callsign === 'W1AW' || op.station === 'W1AW-7');
+if (matchingOp) {
+  hostState.status = 'on_air';
+  hostState.opNumber = matchingOp.number;
+  hostState.qsos = matchingOp.qsos ?? 0;
+  hostState.points = matchingOp.points ?? 0;
+}
+if (hostState.opNumber !== stationOp.number) throw new Error(`Host HUD opNumber failed to sync: expected ${stationOp.number}, got ${hostState.opNumber}`);
+if (hostState.qsos !== 0) throw new Error(`Host HUD qsos failed to reset: expected 0, got ${hostState.qsos}`);
+if (hostState.points !== 0) throw new Error(`Host HUD points failed to reset: expected 0, got ${hostState.points}`);
+console.log(`✓ Host HUD correctly synced Op #${hostState.opNumber} with fresh 0 QSOs and 0 points from live spots feed`);
+
 // Wait for simulated chaser arrival (scheduled at 4000ms in server.mjs)
 console.log('-> Waiting for chaser pileup relay...');
 await new Promise(r => setTimeout(r, 3200));

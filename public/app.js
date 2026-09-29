@@ -99,6 +99,11 @@ class GraywolfClient {
 
     // 6. Host / Activation Assistant watchdog timer & initial status sync
     setInterval(() => this.updateHostWatchdogAndTimer(), 3000);
+    setInterval(() => {
+      if (this.state.host.status === 'on_air' || this.state.host.status === 'pending') {
+        this.fetchHostOpStatus().catch(() => {});
+      }
+    }, 30000);
     this.fetchHostOpStatus().catch(() => {});
   }
 
@@ -378,7 +383,15 @@ class GraywolfClient {
         const desc = (this.dom.inputOpDesc.value || '').trim();
         this.dom.modalStartOp.close();
         this.sendBotCommand(desc ? `HOST ${desc}` : 'HOST');
+        
+        // Reset Host HUD for the fresh activation
         this.state.host.status = 'pending';
+        this.state.host.opNumber = null;
+        this.state.host.qsos = 0;
+        this.state.host.points = 0;
+        this.state.host.chasers = [];
+        this.state.host.startedAt = null;
+        this.state.host.expiresAt = null;
         this.state.host.description = desc;
         this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
         this.renderHostHud();
@@ -798,6 +811,8 @@ class GraywolfClient {
           this.dom.diagGwCallsign.textContent = data.callsign;
           this.dom.summaryStation.textContent = data.callsign;
           this.setAuthRequired(false);
+          this.syncHostFromSpots();
+          this.fetchHostOpStatus().catch(() => {});
         }
       }
     } catch (err) {
@@ -1978,6 +1993,7 @@ class GraywolfClient {
         this.state.spots = ops;
         this.updateSpotsCounters();
         this.renderSpots();
+        this.syncHostFromSpots();
         if (manual) {
           this.showToast(`Updated ${ops.length} live APRSOTA ops`, 'info');
         }
@@ -1991,6 +2007,58 @@ class GraywolfClient {
       if (manual && this.dom.btnRefreshSpots) {
         setTimeout(() => this.dom.btnRefreshSpots.classList.remove('rotating'), 500);
       }
+    }
+  }
+
+  syncHostFromSpots() {
+    if (!this.state.spots || !Array.isArray(this.state.spots)) return;
+    const myStation = (this.state.stationCallsign || '').toUpperCase();
+    const myBaseCall = myStation.split('-')[0];
+
+    // Find any active op in the spots feed belonging to this station
+    const myOp = this.state.spots.find(op => {
+      const opBase = (op.callsign || '').split('-')[0].toUpperCase();
+      const opStation = (op.station || op.callsign || '').toUpperCase();
+      const opStationBase = opStation.split('-')[0];
+      return (myBaseCall && (opBase === myBaseCall || opStationBase === myBaseCall)) ||
+             (myStation && opStation === myStation);
+    });
+
+    if (myOp && (myOp.state === 'on_air' || !myOp.ended_at)) {
+      const rawOpNum = (myOp.number !== undefined && myOp.number !== null)
+        ? myOp.number
+        : (myOp.op !== undefined && myOp.op !== null ? myOp.op : null);
+
+      // If user had explicitly ended the op, do not revert unless it's a new op number
+      if (this.state.host.status === 'ended' && rawOpNum === this.state.host.opNumber) {
+        return;
+      }
+
+      // Detect if activation switched to a new OP number
+      if (rawOpNum && this.state.host.opNumber && this.state.host.opNumber !== rawOpNum) {
+        console.log(`[HOST] Switched to new activation: Op #${this.state.host.opNumber} -> Op #${rawOpNum}`);
+        this.state.host.chasers = [];
+      }
+
+      this.state.host.status = 'on_air';
+      this.state.host.opNumber = rawOpNum;
+      if (myOp.grid) this.state.host.grid = myOp.grid;
+      if (myOp.description || myOp.name || myOp.comment) {
+        this.state.host.description = myOp.description || myOp.name || myOp.comment;
+      }
+      if (typeof myOp.qsos === 'number') {
+        this.state.host.qsos = myOp.qsos;
+      }
+      if (typeof myOp.points === 'number') {
+        this.state.host.points = myOp.points;
+      }
+      if (myOp.expires_at) {
+        this.state.host.expiresAt = Date.parse(myOp.expires_at);
+      }
+      if (myOp.started_at || myOp.on_air_at) {
+        this.state.host.startedAt = Date.parse(myOp.started_at || myOp.on_air_at);
+      }
+      this.renderHostHud();
     }
   }
 
@@ -2279,6 +2347,12 @@ class GraywolfClient {
     if (isToBot && msg.direction === 'out') {
       if (/^(HOST|QRV)\b/i.test(text)) {
         this.state.host.status = 'pending';
+        this.state.host.opNumber = null;
+        this.state.host.qsos = 0;
+        this.state.host.points = 0;
+        this.state.host.chasers = [];
+        this.state.host.startedAt = null;
+        this.state.host.expiresAt = null;
         this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
         this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
         this.renderHostHud();
@@ -2328,14 +2402,28 @@ class GraywolfClient {
         this.renderHostHud();
       }
       // (b) Bot on-air announcement
-      else if (/is on the air from\s+([A-Za-z0-9]{4,6})\.\s*aprsota\.org\/([A-Za-z0-9/-]+)\/ops\/(\d+)/i.test(text)) {
-        const match = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})\.\s*aprsota\.org\/([A-Za-z0-9/-]+)\/ops\/(\d+)/i);
+      else if (/is on the air from\s+([A-Za-z0-9]{4,6})/i.test(text)) {
+        const gridMatch = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})/i);
         this.state.host.status = 'on_air';
-        this.state.host.grid = match[1].toUpperCase();
-        this.state.host.opNumber = parseInt(match[3], 10);
+        if (gridMatch) this.state.host.grid = gridMatch[1].toUpperCase();
+
+        const opNumMatch = text.match(/(?:(?:ops?|activations?)\/|Op\s*#?\s*)(\d+)/i) ||
+                           text.match(/aprsota\.org\/[^\s/]+\/[^\s/]+\/(\d+)/i);
+        if (opNumMatch) {
+          this.state.host.opNumber = parseInt(opNumMatch[1], 10);
+        }
+
         if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
         this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
-        if (isLive) this.showToast(`🚀 On the air as Op #${this.state.host.opNumber} from ${this.state.host.grid}!`, 'success');
+
+        // Immediately trigger sync from spots feed & operator status endpoint
+        this.fetchOtaSpots().catch(() => {});
+        this.fetchHostOpStatus().catch(() => {});
+
+        if (isLive) {
+          const opLabel = this.state.host.opNumber ? `Op #${this.state.host.opNumber}` : 'Active Op';
+          this.showToast(`🚀 On the air as ${opLabel} from ${this.state.host.grid || 'field'}!`, 'success');
+        }
         this.renderHostHud();
       }
       // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>"
@@ -2663,20 +2751,30 @@ class GraywolfClient {
   }
 
   async fetchHostOpStatus() {
-    if (!this.state.stationCallsign || this.state.stationCallsign === 'GRAYWOLF') return;
+    if (!this.state.stationCallsign) return;
     try {
       const baseCall = this.state.stationCallsign.split('-')[0].toUpperCase();
       const res = await fetch(`/api/ota/operators/${encodeURIComponent(baseCall)}`);
       if (res.ok) {
         const data = await res.json();
-        if (data && data.on_air && data.on_air.state === 'on_air') {
+        if (data && data.on_air && (data.on_air.state === 'on_air' || !data.on_air.ended_at)) {
           const onAir = data.on_air;
+          const rawOpNum = onAir.number ?? onAir.op ?? null;
+
+          if (this.state.host.status === 'ended' && rawOpNum === this.state.host.opNumber) {
+            return;
+          }
+
+          if (rawOpNum && this.state.host.opNumber && this.state.host.opNumber !== rawOpNum) {
+            this.state.host.chasers = [];
+          }
+
           this.state.host.status = 'on_air';
-          this.state.host.opNumber = onAir.number;
-          this.state.host.grid = onAir.grid || this.state.host.grid;
-          this.state.host.description = onAir.description || this.state.host.description;
-          this.state.host.qsos = onAir.qsos || 0;
-          this.state.host.points = onAir.points || 0;
+          this.state.host.opNumber = rawOpNum;
+          if (onAir.grid) this.state.host.grid = onAir.grid;
+          if (onAir.description) this.state.host.description = onAir.description;
+          this.state.host.qsos = onAir.qsos ?? this.state.host.qsos ?? 0;
+          this.state.host.points = onAir.points ?? this.state.host.points ?? 0;
           if (onAir.on_air_at) this.state.host.startedAt = Date.parse(onAir.on_air_at);
           if (onAir.expires_at) this.state.host.expiresAt = Date.parse(onAir.expires_at);
           this.renderHostHud();
