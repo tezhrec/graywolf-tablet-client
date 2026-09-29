@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -626,18 +627,28 @@ function proxyToGraywolf(req, res, targetUrl) {
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 
 function loadConfig() {
+  let cfg = {
+    aprsota_token: process.env.APRSOTA_TOKEN || '',
+    bot_callsign: process.env.APRSOTA_BOT || 'APRSOTA',
+    client_uuid: ''
+  };
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-      return JSON.parse(data);
+      cfg = { ...cfg, ...JSON.parse(data) };
     }
   } catch (err) {
     console.warn('[CONFIG] Failed to read config.json:', err.message);
   }
-  return {
-    aprsota_token: process.env.APRSOTA_TOKEN || '',
-    bot_callsign: process.env.APRSOTA_BOT || 'APRSOTA'
-  };
+  if (!cfg.client_uuid) {
+    cfg.client_uuid = crypto.randomUUID();
+    try {
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+    } catch {
+      // ignore
+    }
+  }
+  return cfg;
 }
 
 function saveConfig(updates) {
@@ -672,6 +683,8 @@ async function verifyOtaToken(token) {
     return { valid: true, name: otaClientCache.name };
   }
 
+  const config = loadConfig();
+
   return new Promise(resolve => {
     const options = {
       hostname: 'aprsota.org',
@@ -681,6 +694,7 @@ async function verifyOtaToken(token) {
       headers: {
         'Authorization': `Bearer ${token}`,
         'User-Agent': 'Graywolf-Tablet-Client/1.0 (amateur-radio)',
+        'OTA-User': config.client_uuid || 'graywolf-terminal',
         'Accept': 'application/json'
       },
       timeout: 5000
@@ -847,6 +861,7 @@ async function handleOtaApi(req, res, pathname, query) {
         headers: {
           'Authorization': `Bearer ${token}`,
           'User-Agent': 'Graywolf-Tablet-Client/1.0 (amateur-radio)',
+          'OTA-User': config.client_uuid || 'graywolf-terminal',
           'Accept': 'application/json'
         },
         timeout: 8000
@@ -881,6 +896,12 @@ async function handleOtaApi(req, res, pathname, query) {
             } catch (err) {
               console.error('[OTA JSON PARSE ERROR]', err);
             }
+          }
+
+          if (upstreamRes.statusCode === 429) {
+            const retryAfterSec = parseInt(upstreamRes.headers['retry-after'], 10) || 60;
+            console.warn(`[OTA RATE LIMITED] HTTP 429 from aprsota.org. Backing off for ${retryAfterSec}s`);
+            otaNowCache.timestamp = Date.now() + (retryAfterSec * 1000) - 60000;
           }
 
           if (otaNowCache.data) {
