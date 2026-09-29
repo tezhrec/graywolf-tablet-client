@@ -2258,6 +2258,23 @@ class GraywolfClient {
     const isFromBot = fromCall === 'APRSOTA' || fromCall === 'OTA' || fromCall === botCall;
     const isToBot = toCall === 'APRSOTA' || toCall === 'OTA' || toCall === botCall;
 
+    // Auto-mark OP as chased across all connected devices when outgoing @CALLSIGN is broadcast
+    if (msg.direction === 'out') {
+      const atMatch = text.match(/^@([A-Za-z0-9/-]+)/);
+      if (atMatch) {
+        const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
+        const matchingSpot = this.state.spots?.find(s => {
+          const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+          return sBase === chasedTarget;
+        });
+        if (matchingSpot) {
+          const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
+          const opKey = rawOpNum !== null ? `${chasedTarget}:${rawOpNum}` : `${chasedTarget}:current`;
+          this.markOpChased(opKey, { baseCall: chasedTarget, opNumber: rawOpNum });
+        }
+      }
+    }
+
     // 1. Operator outgoing messages to bot
     if (isToBot && msg.direction === 'out') {
       if (/^(HOST|QRV)\b/i.test(text)) {
