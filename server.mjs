@@ -675,6 +675,10 @@ function proxyToGraywolf(req, res, targetUrl) {
     }
   };
 
+  if (req.method === 'POST' && (req.url.startsWith('/api/messages') || req.url.startsWith('/api/beacons'))) {
+    otaNowCache.timestamp = 0;
+  }
+
   const proxyReq = clientMod.request(options, proxyRes => {
     const headers = { ...proxyRes.headers };
 
@@ -952,7 +956,7 @@ async function handleOtaApi(req, res, pathname, query) {
     const config = loadConfig();
     const token = (config.aprsota_token || process.env.APRSOTA_TOKEN || '').trim();
     const now = Date.now();
-    const isManualRefresh = Boolean(query && (query.refresh === '1' || query.refresh === 'true'));
+    const isManualRefresh = Boolean(query && (typeof query.get === 'function' ? (query.get('refresh') === '1' || query.get('refresh') === 'true') : (query.refresh === '1' || query.refresh === 'true')));
 
     // Polite cache: serve if refreshed within 30s, unless a manual refresh is requested
     if (!isManualRefresh && otaNowCache.data && (now - otaNowCache.timestamp < 30000)) {

@@ -54,6 +54,9 @@ class GraywolfClient {
         points: 0,
         lastBeaconAt: null,
         pendingBeaconExpiresAt: null,
+        confirmedOnAirAt: null,
+        beaconSentAt: null,
+        endedAt: null,
         chasers: []
       }
     };
@@ -389,11 +392,15 @@ class GraywolfClient {
         // Reset Host HUD for the fresh activation
         this.state.host.status = 'pending';
         this.state.host.opNumber = null;
+        this.state.host.grid = null;
         this.state.host.qsos = 0;
         this.state.host.points = 0;
         this.state.host.chasers = [];
         this.state.host.startedAt = null;
         this.state.host.expiresAt = null;
+        this.state.host.confirmedOnAirAt = null;
+        this.state.host.beaconSentAt = null;
+        this.state.host.endedAt = null;
         this.state.host.description = desc;
         this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
         this.renderHostHud();
@@ -474,6 +481,7 @@ class GraywolfClient {
         this.dom.modalEndOp.close();
         this.sendBotCommand('DONE');
         this.state.host.status = 'ended';
+        this.state.host.endedAt = Date.now();
         this.state.host.chasers = [];
         this.renderHostHud();
         this.showToast('Ended activation with DONE', 'info');
@@ -1030,9 +1038,7 @@ class GraywolfClient {
         this.startBeaconCooldown();
         this.state.host.lastBeaconAt = Date.now();
         if (this.state.host.status === 'pending') {
-          this.state.host.status = 'on_air';
-          if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
-          if (!this.state.host.expiresAt) this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+          this.state.host.beaconSentAt = Date.now();
         }
         this.renderHostHud();
         this.fetchStatus().catch(() => {});
@@ -1204,9 +1210,7 @@ class GraywolfClient {
     if (data.type === 'beacon_sent' || eventType === 'beacon_sent') {
       this.state.host.lastBeaconAt = Date.now();
       if (this.state.host.status === 'pending') {
-        this.state.host.status = 'on_air';
-        if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
-        if (!this.state.host.expiresAt) this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+        this.state.host.beaconSentAt = Date.now();
       }
       this.renderHostHud();
       this.showToast(`📡 External RF Beacon transmitted (${data.callsign || 'Station'})`, 'info');
@@ -2019,11 +2023,14 @@ class GraywolfClient {
              (myStation && opStation === myStation);
     });
 
+    const now = Date.now();
+
     if (myOp && (myOp.state === 'on_air' || !myOp.ended_at)) {
       // Check if op has expired
-      if (myOp.expires_at && Date.parse(myOp.expires_at) <= Date.now()) {
+      if (myOp.expires_at && Date.parse(myOp.expires_at) <= now) {
         if (this.state.host.status === 'on_air') {
           this.state.host.status = 'off';
+          this.state.host.confirmedOnAirAt = null;
           this.renderHostHud();
         }
         return;
@@ -2045,6 +2052,10 @@ class GraywolfClient {
       }
 
       this.state.host.status = 'on_air';
+      this.state.host.confirmedOnAirAt = now;
+      this.state.host.pendingBeaconExpiresAt = null;
+      this.state.host.beaconSentAt = null;
+      this.state.host.endedAt = null;
       this.state.host.opNumber = rawOpNum;
       if (myOp.grid) this.state.host.grid = myOp.grid;
       if (myOp.description || myOp.name || myOp.comment) {
@@ -2065,10 +2076,37 @@ class GraywolfClient {
       this.renderHostHud();
     } else {
       // Station is NOT currently in the live APRSOTA spots feed
-      // If we are marked on_air, reset to off
+      // If we are currently pending, do not touch pending status
+      if (this.state.host.status === 'pending') {
+        return;
+      }
+
+      // If we are marked on_air:
       if (this.state.host.status === 'on_air') {
+        // 3-minute grace period: if confirmed on air within the last 180s,
+        // spots feed might have ingestion or cache lag - DO NOT REVERT TO OFF!
+        const confirmedRecently = this.state.host.confirmedOnAirAt && (now - this.state.host.confirmedOnAirAt < 180000);
+        const expiresFuture = this.state.host.expiresAt && (this.state.host.expiresAt > now);
+
+        if (confirmedRecently) {
+          return;
+        }
+
+        // If expiresAt is in the future and confirmed on air within 5 minutes, keep grace
+        if (expiresFuture && this.state.host.confirmedOnAirAt && (now - this.state.host.confirmedOnAirAt < 300000)) {
+          return;
+        }
+
         this.state.host.status = 'off';
+        this.state.host.confirmedOnAirAt = null;
         this.renderHostHud();
+      } else if (this.state.host.status === 'ended') {
+        // If op ended and station is no longer in spots, transition to 'off' after 2 minutes
+        if (!this.state.host.endedAt || (now - this.state.host.endedAt > 120000)) {
+          this.state.host.status = 'off';
+          this.state.host.endedAt = null;
+          this.renderHostHud();
+        }
       }
     }
   }
@@ -2424,11 +2462,15 @@ class GraywolfClient {
         if (isLive) {
           this.state.host.status = 'pending';
           this.state.host.opNumber = null;
+          this.state.host.grid = null;
           this.state.host.qsos = 0;
           this.state.host.points = 0;
           this.state.host.chasers = [];
           this.state.host.startedAt = null;
           this.state.host.expiresAt = null;
+          this.state.host.confirmedOnAirAt = null;
+          this.state.host.beaconSentAt = null;
+          this.state.host.endedAt = null;
           this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
           this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
           this.renderHostHud();
@@ -2436,6 +2478,7 @@ class GraywolfClient {
       } else if (/^(DONE|QRT)\b/i.test(text)) {
         if (isLive) {
           this.state.host.status = 'ended';
+          this.state.host.endedAt = Date.now();
           this.state.host.chasers = [];
           this.renderHostHud();
         }
@@ -2480,6 +2523,9 @@ class GraywolfClient {
       if (/Send a position report within 5 mins/i.test(text)) {
         if (isLive) {
           this.state.host.status = 'pending';
+          this.state.host.confirmedOnAirAt = null;
+          this.state.host.beaconSentAt = null;
+          this.state.host.endedAt = null;
           this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
           this.showToast('⏱️ Transmit RF beacon within 5 mins to go on air!', 'warning');
           this.renderHostHud();
@@ -2490,6 +2536,10 @@ class GraywolfClient {
         if (isLive) {
           const gridMatch = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})/i);
           this.state.host.status = 'on_air';
+          this.state.host.confirmedOnAirAt = Date.now();
+          this.state.host.pendingBeaconExpiresAt = null;
+          this.state.host.beaconSentAt = null;
+          this.state.host.endedAt = null;
           if (gridMatch) this.state.host.grid = gridMatch[1].toUpperCase();
 
           const opNumMatch = text.match(/(?:(?:ops?|activations?)\/|Op\s*#?\s*)(\d+)/i) ||
@@ -2499,10 +2549,12 @@ class GraywolfClient {
           }
 
           if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
-          this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+          if (!this.state.host.expiresAt || this.state.host.expiresAt <= Date.now()) {
+            this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+          }
 
-          // Immediately trigger sync from spots feed & operator status endpoint
-          this.fetchOtaSpots().catch(() => {});
+          // Immediately trigger fresh sync from spots feed & operator status endpoint
+          this.fetchOtaSpots(true).catch(() => {});
           this.fetchHostOpStatus().catch(() => {});
 
           const opLabel = this.state.host.opNumber ? `Op #${this.state.host.opNumber}` : 'Active Op';
@@ -2560,6 +2612,7 @@ class GraywolfClient {
       else if (/Op complete:\s*(\d+)\s*QSOs,\s*(\d+)\s*pts/i.test(text)) {
         const match = text.match(/Op complete:\s*(\d+)\s*QSOs,\s*(\d+)\s*pts/i);
         this.state.host.status = 'ended';
+        this.state.host.endedAt = Date.now();
         this.state.host.qsos = parseInt(match[1], 10);
         this.state.host.points = parseInt(match[2], 10);
         this.state.host.chasers = [];
@@ -2570,34 +2623,64 @@ class GraywolfClient {
   }
 
   updateHostWatchdogAndTimer() {
+    const now = Date.now();
+
     // 1. iGate Beacon elapsed timer
     if (this.dom.hostWatchdogStatus || this.dom.stripBeaconTime) {
       if (!this.state.host.lastBeaconAt) {
         if (this.dom.hostWatchdogStatus) this.dom.hostWatchdogStatus.textContent = 'Last beacon: Never';
         if (this.dom.stripBeaconTime) this.dom.stripBeaconTime.textContent = '📡 Beacon: --';
       } else {
-        const elapsedSec = Math.floor((Date.now() - this.state.host.lastBeaconAt) / 1000);
+        const elapsedSec = Math.floor((now - this.state.host.lastBeaconAt) / 1000);
         const elapsedStr = elapsedSec < 60 ? `${elapsedSec}s ago` : `${Math.floor(elapsedSec / 60)}m ago`;
         if (this.dom.hostWatchdogStatus) this.dom.hostWatchdogStatus.textContent = `Last beacon: ${elapsedStr}`;
         if (this.dom.stripBeaconTime) this.dom.stripBeaconTime.textContent = `📡 Beacon: ${elapsedStr}`;
       }
     }
 
-    // 2. Op Countdown / Window timer
+    // 2. Op Countdown / Window timer & Expiration check
     let timeStr = '--';
     let stripTimeStr = '⏱ --m';
 
-    if (this.state.host.status === 'on_air' && this.state.host.expiresAt) {
-      const remainingSec = Math.max(0, Math.floor((this.state.host.expiresAt - Date.now()) / 1000));
-      const mins = Math.floor(remainingSec / 60);
-      timeStr = `${mins}m`;
-      stripTimeStr = `⏱ ${mins}m`;
-    } else if (this.state.host.status === 'pending' && this.state.host.pendingBeaconExpiresAt) {
-      const remainingSec = Math.max(0, Math.floor((this.state.host.pendingBeaconExpiresAt - Date.now()) / 1000));
-      const mins = Math.floor(remainingSec / 60);
-      const secs = remainingSec % 60;
-      timeStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-      stripTimeStr = `⏱ ${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    if (this.state.host.status === 'on_air') {
+      if (this.state.host.expiresAt) {
+        if (now >= this.state.host.expiresAt) {
+          // Activation time window expired
+          this.state.host.status = 'off';
+          this.state.host.confirmedOnAirAt = null;
+          this.renderHostHud();
+          this.showToast('⏱️ Activation time window expired.', 'warning');
+          return;
+        }
+        const remainingSec = Math.max(0, Math.floor((this.state.host.expiresAt - now) / 1000));
+        const mins = Math.floor(remainingSec / 60);
+        timeStr = `${mins}m`;
+        stripTimeStr = `⏱ ${mins}m`;
+      }
+    } else if (this.state.host.status === 'pending') {
+      if (this.state.host.pendingBeaconExpiresAt) {
+        if (now >= this.state.host.pendingBeaconExpiresAt) {
+          // 5-minute beacon window expired! Auto-reset to off so Start Op is re-enabled
+          this.state.host.status = 'off';
+          this.state.host.pendingBeaconExpiresAt = null;
+          this.state.host.beaconSentAt = null;
+          this.renderHostHud();
+          this.showToast('⚠️ Position beacon window expired (5 min). Op cancelled.', 'warning');
+          return;
+        }
+        const remainingSec = Math.max(0, Math.floor((this.state.host.pendingBeaconExpiresAt - now) / 1000));
+        const mins = Math.floor(remainingSec / 60);
+        const secs = remainingSec % 60;
+        timeStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        stripTimeStr = `⏱ ${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      }
+    } else if (this.state.host.status === 'ended') {
+      if (this.state.host.endedAt && (now - this.state.host.endedAt > 120000)) {
+        this.state.host.status = 'off';
+        this.state.host.endedAt = null;
+        this.renderHostHud();
+        return;
+      }
     }
 
     if (this.dom.hostHudTimeLeft) this.dom.hostHudTimeLeft.textContent = timeStr;
@@ -2612,20 +2695,22 @@ class GraywolfClient {
       this.dom.hostStatusPill.className = `host-status-pill ${host.status}`;
     }
     if (this.dom.hostStatusText) {
-      const statusLabels = {
-        off: 'OFF AIR',
-        pending: 'BEACON PENDING',
-        on_air: 'ON AIR',
-        ended: 'ENDED'
-      };
-      this.dom.hostStatusText.textContent = statusLabels[host.status] || 'OFF AIR';
+      let label = 'OFF AIR';
+      if (host.status === 'on_air') {
+        label = 'ON AIR';
+      } else if (host.status === 'pending') {
+        label = host.beaconSentAt ? 'BEACON SENT' : 'BEACON PENDING';
+      } else if (host.status === 'ended') {
+        label = 'ENDED';
+      }
+      this.dom.hostStatusText.textContent = label;
     }
 
     // Top Bar indicator
     if (this.dom.hostTopBadge) {
       const topBadges = {
         off: 'OFF',
-        pending: 'PEND',
+        pending: host.beaconSentAt ? 'WAIT' : 'PEND',
         on_air: 'ON AIR',
         ended: 'END'
       };
@@ -2638,11 +2723,19 @@ class GraywolfClient {
       this.dom.hostHudOpNum.textContent = host.opNumber ? `Op #${host.opNumber}` : 'Op --';
     }
     if (this.dom.hostHudDesc) {
-      this.dom.hostHudDesc.textContent = host.description || (
-        host.status === 'off' ? "Ready to go on the air. Tap 'Start Op' below to begin an activation." :
-        host.status === 'pending' ? 'Waiting for initial position beacon on RF to go on the air...' :
-        'APRSOTA Activation in progress'
-      );
+      if (host.status === 'off') {
+        this.dom.hostHudDesc.textContent = "Ready to go on the air. Tap 'Start Op' below to begin an activation.";
+      } else if (host.status === 'pending') {
+        if (host.beaconSentAt) {
+          this.dom.hostHudDesc.textContent = 'Beacon transmitted · Awaiting APRSOTA bot confirmation...';
+        } else {
+          this.dom.hostHudDesc.textContent = host.description
+            ? `${host.description} · Waiting for initial position beacon on RF to go on the air...`
+            : 'Waiting for initial position beacon on RF to go on the air...';
+        }
+      } else {
+        this.dom.hostHudDesc.textContent = host.description || 'APRSOTA Activation in progress';
+      }
     }
 
     // Meta grid
@@ -2843,8 +2936,26 @@ class GraywolfClient {
       const res = await fetch(`/api/ota/operators/${encodeURIComponent(baseCall)}`);
       if (res.ok) {
         const data = await res.json();
-        if (data && data.on_air && (data.on_air.state === 'on_air' || !data.on_air.ended_at)) {
+        const now = Date.now();
+        if (data && data.on_air) {
           const onAir = data.on_air;
+          const isEnded = onAir.state === 'ended' || Boolean(onAir.ended_at);
+          const isExpired = onAir.expires_at ? (Date.parse(onAir.expires_at) <= now) : false;
+
+          if (isEnded || isExpired) {
+            // Operator's on_air record is ended or expired!
+            if (this.state.host.status === 'on_air') {
+              const confirmedRecently = this.state.host.confirmedOnAirAt && (now - this.state.host.confirmedOnAirAt < 180000);
+              if (!confirmedRecently) {
+                this.state.host.status = 'off';
+                this.state.host.confirmedOnAirAt = null;
+                this.renderHostHud();
+              }
+            }
+            return;
+          }
+
+          // Active on-air op
           const rawOpNum = onAir.number ?? onAir.op ?? null;
 
           if (this.state.host.status === 'ended' && rawOpNum === this.state.host.opNumber) {
@@ -2856,6 +2967,10 @@ class GraywolfClient {
           }
 
           this.state.host.status = 'on_air';
+          this.state.host.confirmedOnAirAt = now;
+          this.state.host.pendingBeaconExpiresAt = null;
+          this.state.host.beaconSentAt = null;
+          this.state.host.endedAt = null;
           this.state.host.opNumber = rawOpNum;
           if (onAir.grid) this.state.host.grid = onAir.grid;
           if (onAir.description) this.state.host.description = onAir.description;
@@ -2864,6 +2979,16 @@ class GraywolfClient {
           if (onAir.on_air_at) this.state.host.startedAt = Date.parse(onAir.on_air_at);
           if (onAir.expires_at) this.state.host.expiresAt = Date.parse(onAir.expires_at);
           this.renderHostHud();
+        } else {
+          // data.on_air is null or absent
+          if (this.state.host.status === 'on_air') {
+            const confirmedRecently = this.state.host.confirmedOnAirAt && (now - this.state.host.confirmedOnAirAt < 180000);
+            if (!confirmedRecently) {
+              this.state.host.status = 'off';
+              this.state.host.confirmedOnAirAt = null;
+              this.renderHostHud();
+            }
+          }
         }
       }
     } catch {

@@ -542,8 +542,159 @@ if (pruned.length !== 1 || pruned[0].callsign !== 'W1AW') {
 }
 console.log('✓ Pruning verification: Ended and expired activations are cleanly filtered out');
 
+console.log('\nTesting 18: Host State Machine Flapping, Beacon Pending & Expiry Verification');
+
+// 1. Pending beacon state & RF transmit handling
+const testHost = {
+  status: 'pending',
+  opNumber: null,
+  grid: null,
+  description: 'POTA K-1234',
+  startedAt: null,
+  expiresAt: null,
+  confirmedOnAirAt: null,
+  beaconSentAt: null,
+  endedAt: null,
+  pendingBeaconExpiresAt: Date.now() + 5 * 60 * 1000,
+  chasers: []
+};
+
+// Simulate RF beacon transmit during pending
+function onBeaconSent(host) {
+  host.lastBeaconAt = Date.now();
+  if (host.status === 'pending') {
+    host.beaconSentAt = Date.now();
+  }
+}
+onBeaconSent(testHost);
+if (testHost.status !== 'pending') throw new Error('Status should remain pending until bot confirmation arrives');
+if (!testHost.beaconSentAt) throw new Error('beaconSentAt should be recorded upon beacon send');
+console.log('✓ Beacon pending guard: Transmitting RF beacon does not prematurely flip status to on_air');
+
+// 2. Anti-flapping 3-minute grace period test
+// Bot confirms on-air
+testHost.status = 'on_air';
+testHost.confirmedOnAirAt = Date.now();
+testHost.opNumber = 55;
+testHost.expiresAt = Date.now() + 60 * 60 * 1000;
+testHost.pendingBeaconExpiresAt = null;
+testHost.beaconSentAt = null;
+
+function simulateSyncHostFromSpots(host, spots, stationCall) {
+  const now = Date.now();
+  const baseCall = stationCall.split('-')[0].toUpperCase();
+  const myOp = spots.find(s => {
+    const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+    return sBase === baseCall || (s.station && s.station.toUpperCase() === stationCall.toUpperCase());
+  });
+
+  if (myOp && (myOp.state === 'on_air' || !myOp.ended_at)) {
+    if (myOp.expires_at && Date.parse(myOp.expires_at) <= now) {
+      if (host.status === 'on_air') {
+        host.status = 'off';
+        host.confirmedOnAirAt = null;
+      }
+      return;
+    }
+    host.status = 'on_air';
+    host.confirmedOnAirAt = now;
+    host.opNumber = myOp.number ?? myOp.op ?? null;
+  } else {
+    if (host.status === 'pending') return;
+    if (host.status === 'on_air') {
+      const confirmedRecently = host.confirmedOnAirAt && (now - host.confirmedOnAirAt < 180000);
+      const expiresFuture = host.expiresAt && (host.expiresAt > now);
+      if (confirmedRecently || (expiresFuture && host.confirmedOnAirAt && (now - host.confirmedOnAirAt < 300000))) {
+        return; // Protected by grace period!
+      }
+      host.status = 'off';
+      host.confirmedOnAirAt = null;
+    } else if (host.status === 'ended') {
+      if (!host.endedAt || (now - host.endedAt > 120000)) {
+        host.status = 'off';
+        host.endedAt = null;
+      }
+    }
+  }
+}
+
+// Spots feed is empty due to API ingestion lag
+simulateSyncHostFromSpots(testHost, [], 'W1AW-7');
+if (testHost.status !== 'on_air') throw new Error('State flapped to off despite 3-minute grace period!');
+if (testHost.opNumber !== 55) throw new Error('Op number lost during transient spots cache lag');
+console.log('✓ Anti-flapping protection: 3-minute grace period successfully prevented premature off air transition');
+
+// 3. 5-minute beacon pending window expiration & lockout recovery
+const expiredPendingHost = {
+  status: 'pending',
+  pendingBeaconExpiresAt: Date.now() - 1000, // expired 1s ago
+  beaconSentAt: null
+};
+function simulateHostWatchdog(host) {
+  const now = Date.now();
+  if (host.status === 'pending' && host.pendingBeaconExpiresAt) {
+    if (now >= host.pendingBeaconExpiresAt) {
+      host.status = 'off';
+      host.pendingBeaconExpiresAt = null;
+      host.beaconSentAt = null;
+    }
+  } else if (host.status === 'ended') {
+    if (host.endedAt && (now - host.endedAt > 120000)) {
+      host.status = 'off';
+      host.endedAt = null;
+    }
+  }
+}
+simulateHostWatchdog(expiredPendingHost);
+if (expiredPendingHost.status !== 'off') throw new Error('Pending host failed to auto-recover to off upon expiration');
+console.log('✓ Pending timeout recovery: 5-minute beacon window expiration cleanly resets status to off');
+
+// 4. Cold restart guard against resurrecting expired operator records
+const startupHost = { status: 'off', opNumber: null, qsos: 0, points: 0 };
+function simulateFetchHostOpStatus(host, apiData) {
+  const now = Date.now();
+  if (apiData && apiData.on_air) {
+    const onAir = apiData.on_air;
+    const isEnded = onAir.state === 'ended' || Boolean(onAir.ended_at);
+    const isExpired = onAir.expires_at ? (Date.parse(onAir.expires_at) <= now) : false;
+    if (isEnded || isExpired) {
+      if (host.status === 'on_air') {
+        const confirmedRecently = host.confirmedOnAirAt && (now - host.confirmedOnAirAt < 180000);
+        if (!confirmedRecently) {
+          host.status = 'off';
+          host.confirmedOnAirAt = null;
+        }
+      }
+      return;
+    }
+    host.status = 'on_air';
+    host.opNumber = onAir.number;
+  }
+}
+
+// Case A: Operator record has expired timestamp
+simulateFetchHostOpStatus(startupHost, {
+  callsign: 'W1AW',
+  on_air: {
+    number: 40,
+    state: 'on_air',
+    expires_at: new Date(Date.now() - 3600000).toISOString() // expired 1h ago
+  }
+});
+if (startupHost.status !== 'off') throw new Error('Startup resurrected an expired op!');
+console.log('✓ Cold restart guard: Expired operator activation correctly ignored on startup');
+
+// 5. Ended op auto-cleanup after 2 minutes
+const endedHost = {
+  status: 'ended',
+  endedAt: Date.now() - 130000 // ended 2m10s ago
+};
+simulateSyncHostFromSpots(endedHost, [], 'W1AW-7');
+if (endedHost.status !== 'off') throw new Error('Ended host failed to transition to off after 2 minutes');
+console.log('✓ Ended activation cleanup: State transitioned cleanly from ended to off after 2 minutes');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 17 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 18 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
