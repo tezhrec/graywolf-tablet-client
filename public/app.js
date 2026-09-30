@@ -2025,6 +2025,15 @@ class GraywolfClient {
     });
 
     if (myOp && (myOp.state === 'on_air' || !myOp.ended_at)) {
+      // Check if op has expired
+      if (myOp.expires_at && Date.parse(myOp.expires_at) <= Date.now()) {
+        if (this.state.host.status === 'on_air') {
+          this.state.host.status = 'off';
+          this.renderHostHud();
+        }
+        return;
+      }
+
       const rawOpNum = (myOp.number !== undefined && myOp.number !== null)
         ? myOp.number
         : (myOp.op !== undefined && myOp.op !== null ? myOp.op : null);
@@ -2059,6 +2068,13 @@ class GraywolfClient {
         this.state.host.startedAt = Date.parse(myOp.started_at || myOp.on_air_at);
       }
       this.renderHostHud();
+    } else {
+      // Station is NOT currently in the live APRSOTA spots feed
+      // If we are marked on_air, reset to off
+      if (this.state.host.status === 'on_air') {
+        this.state.host.status = 'off';
+        this.renderHostHud();
+      }
     }
   }
 
@@ -2346,48 +2362,54 @@ class GraywolfClient {
     // 1. Operator outgoing messages to bot
     if (isToBot && msg.direction === 'out') {
       if (/^(HOST|QRV)\b/i.test(text)) {
-        this.state.host.status = 'pending';
-        this.state.host.opNumber = null;
-        this.state.host.qsos = 0;
-        this.state.host.points = 0;
-        this.state.host.chasers = [];
-        this.state.host.startedAt = null;
-        this.state.host.expiresAt = null;
-        this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
-        this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
-        this.renderHostHud();
+        if (isLive) {
+          this.state.host.status = 'pending';
+          this.state.host.opNumber = null;
+          this.state.host.qsos = 0;
+          this.state.host.points = 0;
+          this.state.host.chasers = [];
+          this.state.host.startedAt = null;
+          this.state.host.expiresAt = null;
+          this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
+          this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+          this.renderHostHud();
+        }
       } else if (/^(DONE|QRT)\b/i.test(text)) {
-        this.state.host.status = 'ended';
-        this.renderHostHud();
+        if (isLive) {
+          this.state.host.status = 'ended';
+          this.renderHostHud();
+        }
       } else if (/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))\b/i.test(text)) {
-        const match = text.match(/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))/i);
-        const targetCall = (match[1] || match[2]).toUpperCase();
-        const baseTarget = targetCall.split('-')[0];
+        if (isLive || this.state.host.status === 'on_air') {
+          const match = text.match(/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))/i);
+          const targetCall = (match[1] || match[2]).toUpperCase();
+          const baseTarget = targetCall.split('-')[0];
 
-        let found = false;
-        for (const c of this.state.host.chasers) {
-          if (c.callsign === targetCall || c.baseCall === baseTarget) {
-            if (c.status !== 'confirmed') {
-              c.status = 'confirmed';
-              this.state.host.qsos += 1;
-              this.state.host.points += 3;
+          let found = false;
+          for (const c of this.state.host.chasers) {
+            if (c.callsign === targetCall || c.baseCall === baseTarget) {
+              if (c.status !== 'confirmed') {
+                c.status = 'confirmed';
+                this.state.host.qsos += 1;
+                this.state.host.points += 3;
+              }
+              found = true;
             }
-            found = true;
           }
+          if (!found) {
+            this.state.host.chasers.push({
+              callsign: targetCall,
+              baseCall: baseTarget,
+              grid: '----',
+              message: '',
+              receivedAt: msg.sent_at || new Date().toISOString(),
+              status: 'confirmed'
+            });
+            this.state.host.qsos += 1;
+            this.state.host.points += 3;
+          }
+          this.renderHostHud();
         }
-        if (!found) {
-          this.state.host.chasers.push({
-            callsign: targetCall,
-            baseCall: baseTarget,
-            grid: '----',
-            message: '',
-            receivedAt: new Date().toISOString(),
-            status: 'confirmed'
-          });
-          this.state.host.qsos += 1;
-          this.state.host.points += 3;
-        }
-        this.renderHostHud();
       }
       return;
     }
@@ -2396,38 +2418,41 @@ class GraywolfClient {
     if (isFromBot && msg.direction === 'in') {
       // (a) Bot prompt to beacon within 5 mins
       if (/Send a position report within 5 mins/i.test(text)) {
-        this.state.host.status = 'pending';
-        this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
-        if (isLive) this.showToast('⏱️ Transmit RF beacon within 5 mins to go on air!', 'warning');
-        this.renderHostHud();
+        if (isLive) {
+          this.state.host.status = 'pending';
+          this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+          this.showToast('⏱️ Transmit RF beacon within 5 mins to go on air!', 'warning');
+          this.renderHostHud();
+        }
       }
       // (b) Bot on-air announcement
       else if (/is on the air from\s+([A-Za-z0-9]{4,6})/i.test(text)) {
-        const gridMatch = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})/i);
-        this.state.host.status = 'on_air';
-        if (gridMatch) this.state.host.grid = gridMatch[1].toUpperCase();
-
-        const opNumMatch = text.match(/(?:(?:ops?|activations?)\/|Op\s*#?\s*)(\d+)/i) ||
-                           text.match(/aprsota\.org\/[^\s/]+\/[^\s/]+\/(\d+)/i);
-        if (opNumMatch) {
-          this.state.host.opNumber = parseInt(opNumMatch[1], 10);
-        }
-
-        if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
-        this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
-
-        // Immediately trigger sync from spots feed & operator status endpoint
-        this.fetchOtaSpots().catch(() => {});
-        this.fetchHostOpStatus().catch(() => {});
-
         if (isLive) {
+          const gridMatch = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})/i);
+          this.state.host.status = 'on_air';
+          if (gridMatch) this.state.host.grid = gridMatch[1].toUpperCase();
+
+          const opNumMatch = text.match(/(?:(?:ops?|activations?)\/|Op\s*#?\s*)(\d+)/i) ||
+                             text.match(/aprsota\.org\/[^\s/]+\/[^\s/]+\/(\d+)/i);
+          if (opNumMatch) {
+            this.state.host.opNumber = parseInt(opNumMatch[1], 10);
+          }
+
+          if (!this.state.host.startedAt) this.state.host.startedAt = Date.now();
+          this.state.host.expiresAt = Date.now() + 60 * 60 * 1000;
+
+          // Immediately trigger sync from spots feed & operator status endpoint
+          this.fetchOtaSpots().catch(() => {});
+          this.fetchHostOpStatus().catch(() => {});
+
           const opLabel = this.state.host.opNumber ? `Op #${this.state.host.opNumber}` : 'Active Op';
           this.showToast(`🚀 On the air as ${opLabel} from ${this.state.host.grid || 'field'}!`, 'success');
+          this.renderHostHud();
         }
-        this.renderHostHud();
       }
       // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>"
       else if (/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i.test(text)) {
+        if (!isLive && this.state.host.status !== 'on_air') return;
         const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i);
         const chaserCall = match[1].toUpperCase();
         const grid = match[2].toUpperCase();

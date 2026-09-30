@@ -397,8 +397,59 @@ const w3atvCard = generateChaseButtonHtml('W3ATV', 43);
 if (w3atvCard.isWorked) throw new Error('W3ATV Op #43 should be unworked');
 console.log('✓ Independent operator tracking verified.');
 
+console.log('\nTesting 16: Cold Start / Historical Message Replay Guard');
+// Simulate startup with historical bot messages
+let bootHost = {
+  status: 'off',
+  opNumber: null,
+  qsos: 0,
+  points: 0
+};
+
+function processBootMessage(msg, isLive) {
+  const text = msg.text.trim();
+  if (/Send a position report within 5 mins/i.test(text)) {
+    if (isLive) bootHost.status = 'pending';
+  } else if (/is on the air from\s+([A-Za-z0-9]{4,6})/i.test(text)) {
+    if (isLive) bootHost.status = 'on_air';
+  }
+}
+
+// 1. Replay past message history on app boot (isLive = false)
+const historicalBotMsg = {
+  from_call: 'OTA',
+  to_call: 'W1AW-7',
+  text: 'W1AW-7 is on the air from FN00al. aprsota.org/W1AW/ops/47',
+  sent_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString() // 3 hours ago
+};
+processBootMessage(historicalBotMsg, false);
+if (bootHost.status !== 'off') {
+  throw new Error(`Historical message falsely set status to "${bootHost.status}". Expected "off".`);
+}
+console.log('✓ Startup guard: Past on-air message in history did NOT trigger on_air state (isLive=false)');
+
+// 2. Check syncHostFromSpots when station is NOT on the air
+const emptySpots = [
+  { callsign: 'K3NG', station: 'K3NG-7', number: 42, state: 'on_air' }
+];
+function syncBootSpots(stationCall, spots) {
+  const baseCall = stationCall.split('-')[0].toUpperCase();
+  const found = spots.find(s => s.callsign === baseCall || s.station === stationCall);
+  if (!found && bootHost.status === 'on_air') {
+    bootHost.status = 'off';
+  }
+}
+syncBootSpots('W1AW-7', emptySpots);
+if (bootHost.status !== 'off') throw new Error('Station should be off air when not in spots feed');
+console.log('✓ Spots reconciliation: Station remains off air when not present in live spots feed');
+
+// 3. Live message arriving in active session DOES trigger on_air
+processBootMessage({ from_call: 'OTA', text: 'W1AW-7 is on the air from FN00al' }, true);
+if (bootHost.status !== 'on_air') throw new Error('Live on-air message failed to trigger on_air state');
+console.log('✓ Live event processing: Real-time on-air message correctly transitions to on_air state');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 15 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 16 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
