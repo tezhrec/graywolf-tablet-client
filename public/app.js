@@ -94,8 +94,10 @@ class GraywolfClient {
     this.fetchOtaStatus().catch(() => {});
     this.fetchOtaSpots().catch(() => {});
 
-    // Polite 60-second polling for APRS OTA spots
-    setInterval(() => this.fetchOtaSpots(), 60000);
+    // Polite 30-second polling for APRS OTA spots (aligns with API max-age=30)
+    setInterval(() => this.fetchOtaSpots(), 30000);
+    // Live countdown and expiration ticker every 10 seconds
+    setInterval(() => this.updateSpotCountdowns(), 10000);
 
     // 6. Host / Activation Assistant watchdog timer & initial status sync
     setInterval(() => this.updateHostWatchdogAndTimer(), 3000);
@@ -472,6 +474,7 @@ class GraywolfClient {
         this.dom.modalEndOp.close();
         this.sendBotCommand('DONE');
         this.state.host.status = 'ended';
+        this.state.host.chasers = [];
         this.renderHostHud();
         this.showToast('Ended activation with DONE', 'info');
       });
@@ -509,13 +512,15 @@ class GraywolfClient {
     const handleSpotListClick = (e) => {
       const btn = e.target.closest('.btn-chase');
       if (btn) {
-        const call = btn.dataset.callsign;
+        const call = (btn.dataset.callsign || '').toUpperCase();
         const opNum = btn.dataset.opNumber;
         const opKey = btn.dataset.opKey;
         const spot = this.state.spots.find(s => {
           const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+          const matchesCall = sBase === call || (s.callsign && s.callsign.toUpperCase() === call);
+          if (!matchesCall) return false;
           if (opNum && (s.number == opNum || s.op == opNum)) return true;
-          return sBase === call || (s.callsign && s.callsign.toUpperCase() === call);
+          return true;
         });
         this.handleChase(call, spot, opKey);
       }
@@ -1534,21 +1539,6 @@ class GraywolfClient {
     this.state.messages.push(optimisticMsg);
     this.processHostMessage(optimisticMsg, true);
 
-    // Auto-mark OP as chased if transmitting @CALLSIGN in message
-    const atMatch = text.match(/^@([A-Za-z0-9/-]+)/);
-    if (atMatch) {
-      const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
-      const matchingSpot = this.state.spots?.find(s => {
-        const sBase = (s.callsign || '').split('-')[0].toUpperCase();
-        return sBase === chasedTarget;
-      });
-      if (matchingSpot) {
-        const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
-        const opKey = rawOpNum !== null ? `${chasedTarget}:${rawOpNum}` : `${chasedTarget}:current`;
-        this.markOpChased(opKey, { baseCall: chasedTarget, opNumber: rawOpNum });
-      }
-    }
-
     this.renderMessages();
 
     try {
@@ -1985,7 +1975,8 @@ class GraywolfClient {
         this.dom.btnRefreshSpots.classList.add('rotating');
       }
 
-      const res = await fetch('/api/ota/now');
+      const url = manual ? '/api/ota/now?refresh=1' : '/api/ota/now';
+      const res = await fetch(url, manual ? { cache: 'no-cache' } : {});
       if (res.ok) {
         const data = await res.json();
         // Support both real schema { generated_at, on_air: [...] } and flat array
@@ -1995,7 +1986,11 @@ class GraywolfClient {
         this.renderSpots();
         this.syncHostFromSpots();
         if (manual) {
-          this.showToast(`Updated ${ops.length} live APRSOTA ops`, 'info');
+          const cacheHeader = res.headers.get('X-Cache') || '';
+          const infoMsg = cacheHeader.includes('304')
+            ? `Live APRSOTA ops up to date (${ops.length} active)`
+            : `Updated ${ops.length} live APRSOTA ops`;
+          this.showToast(infoMsg, 'info');
         }
       }
     } catch (err) {
@@ -2079,13 +2074,18 @@ class GraywolfClient {
   }
 
   updateSpotsCounters() {
-    const total = this.state.spots.length;
     const myCoords = this.getActiveBeaconCoords();
+    let total = 0;
     let nearbyCount = 0;
     let qsosCount = 0;
     let refCount = 0;
 
     this.state.spots.forEach(op => {
+      // Ignore ended and expired ops
+      if (op.state === 'ended' || op.ended_at) return;
+      if (op.expires_at && (Date.now() - Date.parse(op.expires_at) > 120000)) return;
+
+      total++;
       if (op.qsos && op.qsos > 0) qsosCount++;
       if (op.reference) refCount++;
 
@@ -2108,6 +2108,48 @@ class GraywolfClient {
     if (this.dom.countSpotsRef) this.dom.countSpotsRef.textContent = refCount;
   }
 
+  updateSpotCountdowns() {
+    if (!this.state.spots || this.state.spots.length === 0) return;
+    const now = Date.now();
+    let hasExpiredToPrune = false;
+
+    for (const op of this.state.spots) {
+      if (op.expires_at) {
+        const msSinceExpiry = now - Date.parse(op.expires_at);
+        if (msSinceExpiry > 120000 && !op._pruned) {
+          hasExpiredToPrune = true;
+          op._pruned = true;
+        }
+      }
+    }
+
+    if (hasExpiredToPrune) {
+      this.updateSpotsCounters();
+      this.renderSpots();
+      return;
+    }
+
+    // In-place text update for rendered spot countdowns
+    document.querySelectorAll('.spot-card').forEach(card => {
+      const call = card.dataset.callsign;
+      const spot = this.state.spots.find(s => (s.callsign || '').split('-')[0].toUpperCase() === call);
+      if (spot && spot.expires_at) {
+        const cdSpan = card.querySelector('.spot-countdown');
+        if (cdSpan) {
+          const msLeft = Date.parse(spot.expires_at) - now;
+          if (msLeft > 0) {
+            const minsLeft = Math.round(msLeft / 60000);
+            cdSpan.textContent = `⏱ ${minsLeft}m left`;
+            cdSpan.style.color = '';
+          } else {
+            cdSpan.textContent = '⏱ Expired';
+            cdSpan.style.color = 'var(--text-dim)';
+          }
+        }
+      }
+    });
+  }
+
   renderSpots() {
     const myCoords = this.getActiveBeaconCoords();
     const filter = this.state.spotFilter;
@@ -2115,6 +2157,10 @@ class GraywolfClient {
 
     // Filter ops
     const filtered = this.state.spots.filter(op => {
+      // Prune ended and expired ops
+      if (op.state === 'ended' || op.ended_at) return false;
+      if (op.expires_at && (Date.now() - Date.parse(op.expires_at) > 120000)) return false;
+
       const lat = op.position?.lat ?? op.latitude;
       const lon = op.position?.lon ?? op.longitude;
 
@@ -2342,15 +2388,28 @@ class GraywolfClient {
     const isFromBot = fromCall === 'APRSOTA' || fromCall === 'OTA' || fromCall === botCall;
     const isToBot = toCall === 'APRSOTA' || toCall === 'OTA' || toCall === botCall;
 
-    // Auto-mark OP as chased across all connected devices when outgoing @CALLSIGN is broadcast
-    if (msg.direction === 'out') {
+    // Auto-mark OP as chased across all connected devices when outgoing @CALLSIGN is broadcast live
+    if (isLive && msg.direction === 'out') {
       const atMatch = text.match(/^@([A-Za-z0-9/-]+)/);
       if (atMatch) {
         const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
+        const msgTime = Date.parse(msg.sent_at || msg.created_at || 0) || Date.now();
+
         const matchingSpot = this.state.spots?.find(s => {
           const sBase = (s.callsign || '').split('-')[0].toUpperCase();
-          return sBase === chasedTarget;
+          if (sBase !== chasedTarget) return false;
+
+          // Message must be transmitted after or during this activation
+          const spotStart = Date.parse(s.on_air_at || s.started_at || 0);
+          if (spotStart && msgTime < spotStart - 60000) return false;
+
+          // Spot must not have ended long before message was sent
+          const spotEnd = Date.parse(s.ended_at || s.expires_at || 0);
+          if (spotEnd && msgTime > spotEnd + 300000) return false;
+
+          return true;
         });
+
         if (matchingSpot) {
           const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
           const opKey = rawOpNum !== null ? `${chasedTarget}:${rawOpNum}` : `${chasedTarget}:current`;
@@ -2377,6 +2436,7 @@ class GraywolfClient {
       } else if (/^(DONE|QRT)\b/i.test(text)) {
         if (isLive) {
           this.state.host.status = 'ended';
+          this.state.host.chasers = [];
           this.renderHostHud();
         }
       } else if (/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))\b/i.test(text)) {
@@ -2502,6 +2562,7 @@ class GraywolfClient {
         this.state.host.status = 'ended';
         this.state.host.qsos = parseInt(match[1], 10);
         this.state.host.points = parseInt(match[2], 10);
+        this.state.host.chasers = [];
         if (isLive) this.showToast(`🏁 Activation complete: ${this.state.host.qsos} QSOs, ${this.state.host.points} pts`, 'info');
         this.renderHostHud();
       }

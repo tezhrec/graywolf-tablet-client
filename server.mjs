@@ -952,9 +952,10 @@ async function handleOtaApi(req, res, pathname, query) {
     const config = loadConfig();
     const token = (config.aprsota_token || process.env.APRSOTA_TOKEN || '').trim();
     const now = Date.now();
+    const isManualRefresh = Boolean(query && (query.refresh === '1' || query.refresh === 'true'));
 
-    // Polite cache: serve if refreshed within 60s
-    if (otaNowCache.data && (now - otaNowCache.timestamp < 60000)) {
+    // Polite cache: serve if refreshed within 30s, unless a manual refresh is requested
+    if (!isManualRefresh && otaNowCache.data && (now - otaNowCache.timestamp < 30000)) {
       res.setHeader('X-Cache', 'HIT');
       res.writeHead(200);
       return res.end(JSON.stringify(otaNowCache.data));
@@ -993,7 +994,7 @@ async function handleOtaApi(req, res, pathname, query) {
           on_air: [...activeHostOp, ...filteredMock]
         }
       };
-      res.setHeader('X-Cache', 'MOCK');
+      res.setHeader('X-Cache', isManualRefresh ? 'MOCK-REFRESH' : 'MOCK');
       res.writeHead(200);
       return res.end(JSON.stringify(otaNowCache.data));
     }
@@ -1042,7 +1043,7 @@ async function handleOtaApi(req, res, pathname, query) {
                 etag: upstreamRes.headers.etag || null,
                 data: parsed
               };
-              res.setHeader('X-Cache', 'MISS');
+              res.setHeader('X-Cache', isManualRefresh ? 'REFRESHED' : 'MISS');
               res.writeHead(200);
               return res.end(JSON.stringify(parsed));
             } catch (err) {

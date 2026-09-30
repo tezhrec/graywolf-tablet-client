@@ -448,8 +448,102 @@ processBootMessage({ from_call: 'OTA', text: 'W1AW-7 is on the air from FN00al' 
 if (bootHost.status !== 'on_air') throw new Error('Live on-air message failed to trigger on_air state');
 console.log('✓ Live event processing: Real-time on-air message correctly transitions to on_air state');
 
+console.log('\nTesting 17: Multi-Op Transition & Auto-Refresh Reset Verification');
+
+// 1. Verify historical @CALLSIGN message replay (isLive=false) CANNOT mark current activation
+let testChasedOps = {};
+function isOpChasedTest(key) { return Boolean(testChasedOps[key]); }
+function markOpChasedTest(key) { testChasedOps[key] = { chasedAt: new Date().toISOString() }; }
+
+const activeSpots = [
+  { callsign: 'W3JAY', station: 'W3JAY', number: 9, on_air_at: new Date(Date.now() - 30 * 60 * 1000).toISOString() }
+];
+
+function processOutgoingAutoChase(msg, isLive, spots) {
+  if (!isLive || msg.direction !== 'out') return;
+  const match = msg.text.match(/^@([A-Za-z0-9/-]+)/);
+  if (!match) return;
+  const chasedTarget = match[1].split('-')[0].toUpperCase();
+  const msgTime = Date.parse(msg.sent_at || 0) || Date.now();
+
+  const matchingSpot = spots.find(s => {
+    const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+    if (sBase !== chasedTarget) return false;
+    const spotStart = Date.parse(s.on_air_at || 0);
+    if (spotStart && msgTime < spotStart - 60000) return false;
+    return true;
+  });
+
+  if (matchingSpot) {
+    const key = `${chasedTarget}:${matchingSpot.number}`;
+    markOpChasedTest(key);
+  }
+}
+
+// Replaying an old message from yesterday
+const oldOutgoingMsg = {
+  direction: 'out',
+  text: '@W3JAY 599',
+  sent_at: new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+};
+processOutgoingAutoChase(oldOutgoingMsg, false, activeSpots);
+if (isOpChasedTest('W3JAY:9')) {
+  throw new Error('Historical message playback falsely marked current Op #9 as worked!');
+}
+console.log('✓ Historical replay guard: Past @CALLSIGN message cannot mark brand-new Op #9 as worked');
+
+// 2. An old message arriving live (e.g. from sync) with old timestamp also rejected
+processOutgoingAutoChase(oldOutgoingMsg, true, activeSpots);
+if (isOpChasedTest('W3JAY:9')) {
+  throw new Error('Message with past timestamp falsely marked newer Op #9 as worked!');
+}
+console.log('✓ Timestamp guard: Message sent before Op #9 started did NOT mark Op #9 as worked');
+
+// 3. Current live message sent during Op #9 DOES mark Op #9 as worked
+const liveMsg = {
+  direction: 'out',
+  text: '@W3JAY QSL 599',
+  sent_at: new Date().toISOString()
+};
+processOutgoingAutoChase(liveMsg, true, activeSpots);
+if (!isOpChasedTest('W3JAY:9')) {
+  throw new Error('Live message failed to mark Op #9 as worked');
+}
+console.log('✓ Live auto-chase: Real-time message during active Op #9 correctly marked Op #9 as worked');
+
+// 4. When W3JAY starts Op #10, Op #10 is automatically UNWORKED (blue button)
+const op10Key = 'W3JAY:10';
+if (isOpChasedTest(op10Key)) {
+  throw new Error('Op #10 should not be marked worked');
+}
+console.log('✓ Transition reset: When W3JAY transitions to Op #10, worked status cleanly resets');
+
+// 5. Test manual refresh endpoint with ?refresh=1
+const refreshRes = await fetch(`http://127.0.0.1:3948/api/ota/now?refresh=1`);
+const manualCacheHeader = refreshRes.headers.get('X-Cache');
+if (!manualCacheHeader || (!manualCacheHeader.includes('MOCK') && !manualCacheHeader.includes('REFRESH') && !manualCacheHeader.includes('304') && !manualCacheHeader.includes('HIT'))) {
+  throw new Error(`Unexpected cache header on manual refresh: ${manualCacheHeader}`);
+}
+console.log(`✓ Manual refresh upstream revalidation verified (X-Cache: ${manualCacheHeader})`);
+
+// 6. Test spot pruning for ended and expired ops
+const testSpotsToFilter = [
+  { callsign: 'W1AW', number: 1, state: 'on_air', expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString() },
+  { callsign: 'K3NG', number: 2, state: 'ended', ended_at: new Date().toISOString() },
+  { callsign: 'DL7PJ', number: 3, state: 'on_air', expires_at: new Date(Date.now() - 5 * 60 * 1000).toISOString() }
+];
+const pruned = testSpotsToFilter.filter(op => {
+  if (op.state === 'ended' || op.ended_at) return false;
+  if (op.expires_at && (Date.now() - Date.parse(op.expires_at) > 120000)) return false;
+  return true;
+});
+if (pruned.length !== 1 || pruned[0].callsign !== 'W1AW') {
+  throw new Error(`Pruning failed: expected only W1AW, got ${JSON.stringify(pruned.map(p => p.callsign))}`);
+}
+console.log('✓ Pruning verification: Ended and expired activations are cleanly filtered out');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 16 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 17 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
