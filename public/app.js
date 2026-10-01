@@ -1784,14 +1784,17 @@ class GraywolfClient {
     toast.className = `toast ${type}`;
     toast.textContent = message;
 
+    const dismiss = () => {
+      toast.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(-10px)';
+      setTimeout(() => toast.remove(), 250);
+    };
+
+    toast.addEventListener('click', dismiss);
     this.dom.toastContainer.appendChild(toast);
 
-    setTimeout(() => {
-      toast.style.transition = 'opacity 0.3s, transform 0.3s';
-      toast.style.opacity = '0';
-      toast.style.transform = 'translateY(10px)';
-      setTimeout(() => toast.remove(), 300);
-    }, 3500);
+    setTimeout(dismiss, 3500);
   }
 
   formatTime(isoString) {
