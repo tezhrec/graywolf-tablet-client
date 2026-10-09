@@ -693,8 +693,51 @@ simulateSyncHostFromSpots(endedHost, [], 'W1AW-7');
 if (endedHost.status !== 'off') throw new Error('Ended host failed to transition to off after 2 minutes');
 console.log('✓ Ended activation cleanup: State transitioned cleanly from ended to off after 2 minutes');
 
+console.log('\nTesting 19: Own Live OP Exclusion from OPS Chase Feed & Counters');
+
+function isMyOpTest(op, stationCall) {
+  if (!op) return false;
+  const myStation = (stationCall || '').toUpperCase();
+  const myBaseCall = myStation.split('-')[0];
+  if (!myStation && !myBaseCall) return false;
+
+  const opBase = (op.callsign || '').split('-')[0].toUpperCase();
+  const opStation = (op.station || op.callsign || '').toUpperCase();
+  const opStationBase = opStation.split('-')[0];
+
+  return (myBaseCall && (opBase === myBaseCall || opStationBase === myBaseCall)) ||
+         (myStation && (opStation === myStation || (op.callsign && op.callsign.toUpperCase() === myStation)));
+}
+
+const mixedSpots = [
+  { callsign: 'W1AW', station: 'W1AW-7', number: 48, state: 'on_air', description: 'My Live POTA' },
+  { callsign: 'K3NG', station: 'K3NG', number: 42, state: 'on_air', description: 'Chaser Target 1' },
+  { callsign: 'W3JAY', station: 'W3JAY-9', number: 9, state: 'on_air', description: 'Chaser Target 2' }
+];
+
+// Verify isMyOp matching
+if (!isMyOpTest(mixedSpots[0], 'W1AW-7')) throw new Error('isMyOp failed to match own station SSID');
+if (isMyOpTest(mixedSpots[1], 'W1AW-7')) throw new Error('isMyOp falsely matched external station K3NG');
+console.log('✓ Station identity match: isMyOp accurately identifies own activation vs external ops');
+
+// Verify renderSpots filter excludes own op
+const chaseableSpots = mixedSpots.filter(op => {
+  if (op.state === 'ended' || op.ended_at) return false;
+  if (isMyOpTest(op, 'W1AW-7')) return false;
+  return true;
+});
+
+if (chaseableSpots.length !== 2) throw new Error(`Expected 2 chaseable ops, got ${chaseableSpots.length}`);
+if (chaseableSpots.some(s => s.callsign === 'W1AW')) throw new Error('Own station was not filtered out of chase list!');
+console.log('✓ OPS list filtering: Own live OP card is completely omitted from the OPS & Radar chase views');
+
+// Verify host sync still finds own op from raw feed
+const syncedHostOp = mixedSpots.find(op => isMyOpTest(op, 'W1AW-7'));
+if (!syncedHostOp || syncedHostOp.number !== 48) throw new Error('Host HUD failed to sync own OP from spots feed');
+console.log('✓ Dual-track separation: Host HUD still authoritative while chase feed remains clean');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 18 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 19 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);

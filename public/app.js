@@ -2012,19 +2012,25 @@ class GraywolfClient {
     }
   }
 
-  syncHostFromSpots() {
-    if (!this.state.spots || !Array.isArray(this.state.spots)) return;
+  isMyOp(op) {
+    if (!op) return false;
     const myStation = (this.state.stationCallsign || '').toUpperCase();
     const myBaseCall = myStation.split('-')[0];
+    if (!myStation && !myBaseCall) return false;
+
+    const opBase = (op.callsign || '').split('-')[0].toUpperCase();
+    const opStation = (op.station || op.callsign || '').toUpperCase();
+    const opStationBase = opStation.split('-')[0];
+
+    return (myBaseCall && (opBase === myBaseCall || opStationBase === myBaseCall)) ||
+           (myStation && (opStation === myStation || (op.callsign && op.callsign.toUpperCase() === myStation)));
+  }
+
+  syncHostFromSpots() {
+    if (!this.state.spots || !Array.isArray(this.state.spots)) return;
 
     // Find any active op in the spots feed belonging to this station
-    const myOp = this.state.spots.find(op => {
-      const opBase = (op.callsign || '').split('-')[0].toUpperCase();
-      const opStation = (op.station || op.callsign || '').toUpperCase();
-      const opStationBase = opStation.split('-')[0];
-      return (myBaseCall && (opBase === myBaseCall || opStationBase === myBaseCall)) ||
-             (myStation && opStation === myStation);
-    });
+    const myOp = this.state.spots.find(op => this.isMyOp(op));
 
     const now = Date.now();
 
@@ -2126,6 +2132,9 @@ class GraywolfClient {
       if (op.state === 'ended' || op.ended_at) return;
       if (op.expires_at && (Date.now() - Date.parse(op.expires_at) > 120000)) return;
 
+      // Do not count own op in chaseable spots counters
+      if (this.isMyOp(op)) return;
+
       total++;
       if (op.qsos && op.qsos > 0) qsosCount++;
       if (op.reference) refCount++;
@@ -2201,6 +2210,9 @@ class GraywolfClient {
       // Prune ended and expired ops
       if (op.state === 'ended' || op.ended_at) return false;
       if (op.expires_at && (Date.now() - Date.parse(op.expires_at) > 120000)) return false;
+
+      // Filter out own station activation (managed via dedicated Host HUD)
+      if (this.isMyOp(op)) return false;
 
       const lat = op.position?.lat ?? op.latitude;
       const lon = op.position?.lon ?? op.longitude;
