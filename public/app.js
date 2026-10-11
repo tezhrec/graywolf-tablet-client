@@ -360,6 +360,12 @@ class GraywolfClient {
         const btn = e.target.closest('.btn-qsl-chaser');
         if (btn && btn.dataset.callsign) {
           this.qslChaser(btn.dataset.callsign);
+          return;
+        }
+        const confirmBtn = e.target.closest('.btn-confirm-chaser');
+        if (confirmBtn && confirmBtn.dataset.callsign) {
+          this.confirmChaser(confirmBtn.dataset.callsign);
+          return;
         }
       });
     }
@@ -2483,9 +2489,9 @@ class GraywolfClient {
       }
     }
 
-    // 1. Operator outgoing messages to bot
-    if (isToBot && msg.direction === 'out') {
-      if (/^(HOST|QRV)\b/i.test(text)) {
+    // 1. Operator outgoing messages (to bot or direct to chaser)
+    if (msg.direction === 'out') {
+      if (isToBot && /^(HOST|QRV)\b/i.test(text)) {
         if (isLive) {
           this.state.host.status = 'pending';
           this.state.host.opNumber = null;
@@ -2504,15 +2510,10 @@ class GraywolfClient {
           this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
           this.renderHostHud();
         }
-      } else if (/^CHASE\b/i.test(text) || /^@[A-Za-z0-9/-]+\b/.test(text)) {
-        this.state.chaseRequestedAt = Date.now();
-        this.state.host.hostRequestedAt = 0;
-        if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
-          this.state.host.status = 'off';
-          this.state.host.pendingBeaconExpiresAt = null;
-          this.renderHostHud();
-        }
-      } else if (/^(DONE|QRT)\b/i.test(text)) {
+        return;
+      }
+
+      if (isToBot && /^(DONE|QRT)\b/i.test(text)) {
         if (isLive) {
           this.state.host.status = 'ended';
           this.state.host.endedAt = Date.now();
@@ -2520,39 +2521,69 @@ class GraywolfClient {
           this.state.host.chasers = [];
           this.renderHostHud();
         }
-      } else if (/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))\b/i.test(text)) {
-        if (isLive || this.state.host.status === 'on_air') {
-          const match = text.match(/^(?:@([A-Za-z0-9/-]+)\s+QSL|QSL\s+([A-Za-z0-9/-]+))/i);
-          const targetCall = (match[1] || match[2]).toUpperCase();
-          const baseTarget = targetCall.split('-')[0];
+        return;
+      }
 
-          let found = false;
-          for (const c of this.state.host.chasers) {
-            if (c.callsign === targetCall || c.baseCall === baseTarget) {
-              if (c.status !== 'confirmed') {
-                c.status = 'confirmed';
-                this.state.host.qsos += 1;
-                this.state.host.points += 3;
+      // Check if this outgoing message is addressing a chaser or confirming QSL!
+      // Patterns: "@CALLSIGN QSL ...", "@CALLSIGN 599", "QSL @CALLSIGN", "QSL CALLSIGN", or direct DM to CALLSIGN
+      const atMatch = text.match(/^(?:@([A-Za-z0-9/-]+)|QSL\s+@?([A-Za-z0-9/-]+))\b/i);
+      const targetCall = atMatch ? (atMatch[1] || atMatch[2]).toUpperCase() : (!isToBot ? toCall : null);
+      const baseTarget = targetCall ? targetCall.split('-')[0] : null;
+
+      let qslConfirmed = false;
+      if (targetCall) {
+        // If this station is in our pileup queue, mark them confirmed
+        for (const c of this.state.host.chasers) {
+          if (c.callsign === targetCall || c.baseCall === baseTarget) {
+            if (c.status !== 'confirmed') {
+              c.status = 'confirmed';
+              this.state.host.qsos += 1;
+              this.state.host.points += 3;
+              if (isLive) {
+                this.showToast(`✓ QSL confirmed with ${c.callsign}! (+3 pts)`, 'success');
               }
-              found = true;
             }
+            qslConfirmed = true;
           }
-          if (!found) {
-            this.state.host.chasers.push({
-              callsign: targetCall,
-              baseCall: baseTarget,
-              grid: '----',
-              message: '',
-              receivedAt: msg.sent_at || new Date().toISOString(),
-              status: 'confirmed'
-            });
-            this.state.host.qsos += 1;
-            this.state.host.points += 3;
+        }
+
+        // If not in pileup queue yet, but host is on_air and message contains QSL:
+        if (!qslConfirmed && this.state.host.status === 'on_air' && /\bQSL\b/i.test(text)) {
+          this.state.host.chasers.push({
+            callsign: targetCall,
+            baseCall: baseTarget,
+            grid: '----',
+            message: '',
+            receivedAt: msg.sent_at || new Date().toISOString(),
+            status: 'confirmed'
+          });
+          this.state.host.qsos += 1;
+          this.state.host.points += 3;
+          if (isLive) {
+            this.showToast(`✓ Logged QSO with ${targetCall}! (+3 pts)`, 'success');
           }
+          qslConfirmed = true;
+        }
+
+        if (qslConfirmed) {
           this.renderHostHud();
+          return;
         }
       }
-      return;
+
+      // If not a host QSL, check if this is an explicit CHASE command or chasing while OFF/PENDING
+      if (isToBot && (/^CHASE\b/i.test(text) || (/^@[A-Za-z0-9/-]+\b/.test(text) && this.state.host.status !== 'on_air'))) {
+        this.state.chaseRequestedAt = Date.now();
+        this.state.host.hostRequestedAt = 0;
+        if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
+          this.state.host.status = 'off';
+          this.state.host.pendingBeaconExpiresAt = null;
+          this.renderHostHud();
+        }
+        return;
+      }
+
+      if (isToBot) return;
     }
 
     // 2. Incoming messages from bot
@@ -2637,18 +2668,21 @@ class GraywolfClient {
           this.renderHostHud();
         }
       }
-      // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>"
-      else if (/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i.test(text)) {
+      // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>" or "DE <CALLSIGN-SSID> QSL ..."
+      else if (/^DE\s+([A-Za-z0-9/-]+)\s+(?:([A-Za-z0-9]{4,6})\b\s*)?(.*)$/i.test(text)) {
         if (this.state.host.status !== 'on_air') return;
-        const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i);
+        const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+(?:([A-Za-z0-9]{4,6})\b\s*)?(.*)$/i);
         const chaserCall = match[1].toUpperCase();
-        const grid = match[2].toUpperCase();
+        const grid = (match[2] || '').toUpperCase();
         const extra = (match[3] || '').trim();
 
-        // Check if this is a QSL confirmation relay: "DE <CHASER> QSL ..."
-        if (/^QSL\b/i.test(grid) || /^QSL\b/i.test(extra)) {
+        // Check if this is a QSL confirmation relay: "DE <CHASER> QSL ..." or "DE <CHASER> <GRID> QSL ..."
+        if (/\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra)) {
           const chaser = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === chaserCall.split('-')[0]);
-          if (chaser) chaser.status = 'confirmed';
+          if (chaser) {
+            chaser.status = 'confirmed';
+            if (isLive) this.showToast(`✓ Chaser ${chaserCall} confirmed QSL!`, 'success');
+          }
           this.renderHostHud();
           return;
         }
@@ -2657,21 +2691,21 @@ class GraywolfClient {
         const baseCall = chaserCall.split('-')[0];
         let existing = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
         if (existing) {
-          existing.grid = grid;
+          if (grid) existing.grid = grid;
           if (extra) existing.message = extra;
           existing.receivedAt = new Date().toISOString();
         } else {
           this.state.host.chasers.unshift({
             callsign: chaserCall,
             baseCall: baseCall,
-            grid: grid,
+            grid: grid || '----',
             message: extra,
             receivedAt: new Date().toISOString(),
             status: 'waiting'
           });
           if (isLive) {
             this.playChirp('rx');
-            this.showToast(`🎙️ Chaser check-in: ${chaserCall} (${grid})`, 'info');
+            this.showToast(`🎙️ Chaser check-in: ${chaserCall}${grid ? ` (${grid})` : ''}`, 'info');
           }
         }
         this.renderHostHud();
@@ -2876,9 +2910,14 @@ class GraywolfClient {
           </div>
           ${chaser.message ? `<div class="chaser-msg">${this.escapeHtml(chaser.message)}</div>` : ''}
           ${!isConfirmed ? `
-            <button type="button" class="btn-qsl-chaser ${chaser.qslDrafted ? 'worked' : ''}" data-callsign="${this.escapeHtml(chaser.callsign)}">
-              <span>${chaser.qslDrafted ? '✓' : '⚡'}</span> ${chaser.qslDrafted ? `QSL DRAFTED (@${this.escapeHtml(chaser.baseCall)})` : `1-TAP QSL (@${this.escapeHtml(chaser.baseCall)})`}
-            </button>
+            <div style="display: flex; gap: 8px; margin-top: 6px;">
+              <button type="button" class="btn-qsl-chaser ${chaser.qslDrafted ? 'worked' : ''}" data-callsign="${this.escapeHtml(chaser.callsign)}" style="flex: 1;" title="Draft @${this.escapeHtml(chaser.baseCall)} QSL in chat">
+                <span>${chaser.qslDrafted ? '✓' : '⚡'}</span> ${chaser.qslDrafted ? `DRAFTED (@${this.escapeHtml(chaser.baseCall)})` : `1-TAP QSL (@${this.escapeHtml(chaser.baseCall)})`}
+              </button>
+              <button type="button" class="btn-confirm-chaser" data-callsign="${this.escapeHtml(chaser.callsign)}" title="Directly confirm QSO with ${this.escapeHtml(chaser.callsign)}">
+                <span>✓</span> LOG
+              </button>
+            </div>
           ` : ''}
         </div>
       `;
@@ -2970,10 +3009,24 @@ class GraywolfClient {
     const chaser = this.state.host.chasers.find(c => c.callsign === callsign || c.baseCall === baseCall);
     if (chaser && chaser.status !== 'confirmed') {
       chaser.qslDrafted = true;
-      this.renderHostChaserQueue();
+      this.renderHostHud();
     }
 
     this.showToast(`Ready to QSL @${baseCall}. Add comments or tap TX.`, 'info');
+  }
+
+  confirmChaser(callsign) {
+    if (!callsign) return;
+    const baseCall = callsign.split('-')[0].toUpperCase();
+    const target = this.state.host.chasers.find(c => c.callsign === callsign || c.baseCall === baseCall);
+    if (target && target.status !== 'confirmed') {
+      target.status = 'confirmed';
+      this.state.host.qsos += 1;
+      this.state.host.points += 3;
+      this.renderHostHud();
+      this.playChirp('tx');
+      this.showToast(`✓ QSO with ${callsign} confirmed! (+3 pts)`, 'success');
+    }
   }
 
   async sendBotCommand(text) {

@@ -2213,6 +2213,32 @@ html, body {
   transform: scale(0.98);
 }
 
+.btn-confirm-chaser {
+  height: 42px;
+  min-height: 42px;
+  padding: 0 14px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: var(--radius-sm);
+  font-weight: 800;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  touch-action: manipulation;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.btn-confirm-chaser:hover,
+.btn-confirm-chaser:active {
+  background: rgba(16, 185, 129, 0.3);
+  transform: scale(0.98);
+}
+
 /* Persistent Tactical Chat HUD Strip */
 .chat-host-hud-strip {
   display: flex;

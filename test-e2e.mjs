@@ -888,8 +888,142 @@ if (isolationHostState.opNumber !== 102) throw new Error(`Expected opNumber 102,
 if (isolationHostState.grid !== 'EN91AL') throw new Error(`Expected grid EN91AL, got: ${isolationHostState.grid}`);
 console.log('✓ Station on-air match: Own station activation announcement correctly engaged Host HUD on_air mode');
 
+console.log('\nTesting 21: Pileup Chaser Confirmation, 1-Tap QSL & DE Relay Resilience');
+
+const pileupHost = {
+  status: 'on_air',
+  opNumber: 102,
+  grid: 'EN91AL',
+  qsos: 0,
+  points: 0,
+  chasers: []
+};
+
+function processPileupMessage(msg, isLive = true) {
+  const text = msg.text.trim();
+  const fromCall = (msg.from_call || '').toUpperCase();
+  const toCall = (msg.to_call || '').toUpperCase();
+  const botCall = 'APRSOTA';
+  const isFromBot = fromCall === botCall || fromCall === 'OTA';
+  const isToBot = toCall === botCall || toCall === 'OTA';
+
+  // 1. Outgoing
+  if (msg.direction === 'out') {
+    const atMatch = text.match(/^(?:@([A-Za-z0-9/-]+)|QSL\s+@?([A-Za-z0-9/-]+))\b/i);
+    const targetCall = atMatch ? (atMatch[1] || atMatch[2]).toUpperCase() : (!isToBot ? toCall : null);
+    const baseTarget = targetCall ? targetCall.split('-')[0] : null;
+
+    if (targetCall) {
+      for (const c of pileupHost.chasers) {
+        if (c.callsign === targetCall || c.baseCall === baseTarget) {
+          if (c.status !== 'confirmed') {
+            c.status = 'confirmed';
+            pileupHost.qsos += 1;
+            pileupHost.points += 3;
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  // 2. Incoming from bot
+  if (isFromBot && msg.direction === 'in') {
+    if (/^DE\s+([A-Za-z0-9/-]+)\s+(?:([A-Za-z0-9]{4,6})\b\s*)?(.*)$/i.test(text)) {
+      if (pileupHost.status !== 'on_air') return;
+      const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+(?:([A-Za-z0-9]{4,6})\b\s*)?(.*)$/i);
+      const chaserCall = match[1].toUpperCase();
+      const grid = (match[2] || '').toUpperCase();
+      const extra = (match[3] || '').trim();
+
+      if (/\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra)) {
+        const chaser = pileupHost.chasers.find(c => c.callsign === chaserCall || c.baseCall === chaserCall.split('-')[0]);
+        if (chaser) chaser.status = 'confirmed';
+        return;
+      }
+
+      const baseCall = chaserCall.split('-')[0];
+      let existing = pileupHost.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
+      if (existing) {
+        if (grid) existing.grid = grid;
+      } else {
+        pileupHost.chasers.unshift({
+          callsign: chaserCall,
+          baseCall: baseCall,
+          grid: grid || '----',
+          message: extra,
+          status: 'waiting'
+        });
+      }
+    }
+  }
+}
+
+// A. Incoming chaser check-in adds chaser to queue with status: 'waiting'
+processPileupMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'DE K3SAR-7 FN09lv greetings from summit'
+});
+if (pileupHost.chasers.length !== 1) throw new Error('Chaser check-in failed to add to queue');
+if (pileupHost.chasers[0].status !== 'waiting') throw new Error('Chaser status should be waiting');
+console.log('✓ Chaser check-in: Added to queue with WAITING badge');
+
+// B. 1-Tap QSL / Outgoing report "@K3SAR QSL 599" marks chaser confirmed
+processPileupMessage({
+  direction: 'out',
+  to_call: 'APRSOTA',
+  from_call: 'W1AW-7',
+  text: '@K3SAR QSL 599'
+});
+if (pileupHost.chasers[0].status !== 'confirmed') throw new Error('Outgoing QSL failed to mark chaser confirmed');
+if (pileupHost.qsos !== 1 || pileupHost.points !== 3) throw new Error('QSOs and points failed to increment');
+console.log('✓ 1-Tap QSL transmission: Successfully transitioned chaser from WAITING to QSL CONFIRMED (+3 pts)');
+
+// C. Incoming check-in with another chaser
+processPileupMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'DE W3ABC FN10ab hello'
+});
+if (pileupHost.chasers.length !== 2) throw new Error('Second chaser failed to add');
+const w3abc = pileupHost.chasers.find(c => c.baseCall === 'W3ABC');
+if (w3abc.status !== 'waiting') throw new Error('W3ABC should be waiting');
+
+// D. Direct outgoing signal report "@W3ABC 599" without "QSL" keyword also confirms
+processPileupMessage({
+  direction: 'out',
+  to_call: 'APRSOTA',
+  from_call: 'W1AW-7',
+  text: '@W3ABC 599 TU'
+});
+if (w3abc.status !== 'confirmed') throw new Error('Signal report @W3ABC 599 failed to confirm chaser');
+if (pileupHost.qsos !== 2) throw new Error('QSOs failed to increment for W3ABC');
+console.log('✓ Flexible signal report: Transmitting @CALL 599 without strict QSL keyword cleanly confirmed contact');
+
+// E. Incoming 3-letter QSL relay from chaser "DE N0CALL QSL thx 73"
+processPileupMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'DE N0CALL EN90aa calling'
+});
+const n0call = pileupHost.chasers.find(c => c.baseCall === 'N0CALL');
+if (n0call.status !== 'waiting') throw new Error('N0CALL should be waiting');
+
+processPileupMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'DE N0CALL QSL thx for contact 73'
+});
+if (n0call.status !== 'confirmed') throw new Error('3-letter QSL relay failed to confirm N0CALL');
+console.log('✓ Chaser QSL relay parsing: "DE CALL QSL ..." properly matched without 4-letter grid requirement');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 20 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 21 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
