@@ -57,8 +57,10 @@ class GraywolfClient {
         confirmedOnAirAt: null,
         beaconSentAt: null,
         endedAt: null,
+        hostRequestedAt: 0,
         chasers: []
-      }
+      },
+      chaseRequestedAt: 0
     };
 
     this.dom = {};
@@ -401,6 +403,8 @@ class GraywolfClient {
         this.state.host.confirmedOnAirAt = null;
         this.state.host.beaconSentAt = null;
         this.state.host.endedAt = null;
+        this.state.host.hostRequestedAt = Date.now();
+        this.state.chaseRequestedAt = 0;
         this.state.host.description = desc;
         this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
         this.renderHostHud();
@@ -2375,6 +2379,14 @@ class GraywolfClient {
     const baseCall = (rawCallsign || '').split('-')[0].toUpperCase();
     const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
 
+    this.state.chaseRequestedAt = Date.now();
+    this.state.host.hostRequestedAt = 0;
+    if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
+      this.state.host.status = 'off';
+      this.state.host.pendingBeaconExpiresAt = null;
+      this.renderHostHud();
+    }
+
     // Mark OP as chased/worked
     const rawOpNum = spot ? (spot.number ?? spot.op ?? null) : null;
     const opKey = directOpKey || (rawOpNum !== null ? `${baseCall}:${rawOpNum}` : `${baseCall}:current`);
@@ -2486,14 +2498,25 @@ class GraywolfClient {
           this.state.host.confirmedOnAirAt = null;
           this.state.host.beaconSentAt = null;
           this.state.host.endedAt = null;
+          this.state.host.hostRequestedAt = Date.now();
+          this.state.chaseRequestedAt = 0;
           this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
           this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+          this.renderHostHud();
+        }
+      } else if (/^CHASE\b/i.test(text) || /^@[A-Za-z0-9/-]+\b/.test(text)) {
+        this.state.chaseRequestedAt = Date.now();
+        this.state.host.hostRequestedAt = 0;
+        if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
+          this.state.host.status = 'off';
+          this.state.host.pendingBeaconExpiresAt = null;
           this.renderHostHud();
         }
       } else if (/^(DONE|QRT)\b/i.test(text)) {
         if (isLive) {
           this.state.host.status = 'ended';
           this.state.host.endedAt = Date.now();
+          this.state.host.hostRequestedAt = 0;
           this.state.host.chasers = [];
           this.renderHostHud();
         }
@@ -2536,26 +2559,63 @@ class GraywolfClient {
     if (isFromBot && msg.direction === 'in') {
       // (a) Bot prompt to beacon within 5 mins
       if (/Send a position report within 5 mins/i.test(text)) {
-        if (isLive) {
-          this.state.host.status = 'pending';
-          this.state.host.confirmedOnAirAt = null;
-          this.state.host.beaconSentAt = null;
-          this.state.host.endedAt = null;
-          this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
-          this.showToast('⏱️ Transmit RF beacon within 5 mins to go on air!', 'warning');
-          this.renderHostHud();
+        const isChasePrompt = /to chase\b/i.test(text) ||
+          (this.state.chaseRequestedAt && (Date.now() - this.state.chaseRequestedAt < 300000) &&
+           (!this.state.host.hostRequestedAt || this.state.chaseRequestedAt > this.state.host.hostRequestedAt));
+
+        const isHostPrompt = /to go on the air\b/i.test(text) ||
+          (this.state.host.hostRequestedAt && (Date.now() - this.state.host.hostRequestedAt < 300000) &&
+           (!this.state.chaseRequestedAt || this.state.host.hostRequestedAt >= this.state.chaseRequestedAt));
+
+        if (isChasePrompt) {
+          if (isLive) {
+            this.showToast('📡 Position report requested by bot to complete your chase. Transmit RF beacon to complete.', 'info');
+          }
+          if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
+            this.state.host.status = 'off';
+            this.state.host.pendingBeaconExpiresAt = null;
+            this.renderHostHud();
+          }
+        } else if (isHostPrompt) {
+          if (isLive) {
+            this.state.host.status = 'pending';
+            this.state.host.confirmedOnAirAt = null;
+            this.state.host.beaconSentAt = null;
+            this.state.host.endedAt = null;
+            this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+            this.showToast('⏱️ Transmit RF beacon within 5 mins to go on air!', 'warning');
+            this.renderHostHud();
+          }
         }
       }
       // (b) Bot on-air announcement
       else if (/is on the air from\s+([A-Za-z0-9]{4,6})/i.test(text)) {
+        const onAirMatch = text.match(/(?:^|\b)([A-Za-z0-9/-]+)\s+is on the air from\s+([A-Za-z0-9]{4,6})/i);
+        const announcedCall = onAirMatch ? onAirMatch[1].toUpperCase() : '';
+        const announcedBase = announcedCall.split('-')[0];
+        const myStation = (this.state.stationCallsign || '').toUpperCase();
+        const myBaseCall = myStation.split('-')[0];
+
+        const isMyStation = (myBaseCall && (announcedBase === myBaseCall || announcedCall === myBaseCall)) ||
+                            (myStation && announcedCall === myStation);
+
+        if (!isMyStation) {
+          // This on-air announcement is for ANOTHER operator, not us!
+          if (isLive) {
+            const grid = onAirMatch ? onAirMatch[2].toUpperCase() : '';
+            this.showToast(`🛰️ Live Spot: ${announcedCall} on the air from ${grid}`, 'info');
+            this.fetchOtaSpots().catch(() => {});
+          }
+          return;
+        }
+
         if (isLive) {
-          const gridMatch = text.match(/is on the air from\s+([A-Za-z0-9]{4,6})/i);
           this.state.host.status = 'on_air';
           this.state.host.confirmedOnAirAt = Date.now();
           this.state.host.pendingBeaconExpiresAt = null;
           this.state.host.beaconSentAt = null;
           this.state.host.endedAt = null;
-          if (gridMatch) this.state.host.grid = gridMatch[1].toUpperCase();
+          if (onAirMatch) this.state.host.grid = onAirMatch[2].toUpperCase();
 
           const opNumMatch = text.match(/(?:(?:ops?|activations?)\/|Op\s*#?\s*)(\d+)/i) ||
                              text.match(/aprsota\.org\/[^\s/]+\/[^\s/]+\/(\d+)/i);
@@ -2579,7 +2639,7 @@ class GraywolfClient {
       }
       // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>"
       else if (/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i.test(text)) {
-        if (!isLive && this.state.host.status !== 'on_air') return;
+        if (this.state.host.status !== 'on_air') return;
         const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+([A-Za-z0-9]{4,6})(?:\s+(.*))?$/i);
         const chaserCall = match[1].toUpperCase();
         const grid = match[2].toUpperCase();

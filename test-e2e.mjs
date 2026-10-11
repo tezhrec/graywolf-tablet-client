@@ -736,8 +736,160 @@ const syncedHostOp = mixedSpots.find(op => isMyOpTest(op, 'W1AW-7'));
 if (!syncedHostOp || syncedHostOp.number !== 48) throw new Error('Host HUD failed to sync own OP from spots feed');
 console.log('✓ Dual-track separation: Host HUD still authoritative while chase feed remains clean');
 
+console.log('\nTesting 20: Chaser Flow Isolation vs Host State Machine & Callsign Matching');
+
+const isolationHostState = {
+  status: 'off',
+  opNumber: null,
+  grid: null,
+  hostRequestedAt: 0,
+  pendingBeaconExpiresAt: null,
+  confirmedOnAirAt: null,
+  chasers: []
+};
+let chaseRequestedAt = 0;
+const stationCall = 'W1AW-7';
+let toasts = [];
+
+function simulateProcessHostMessage(msg, isLive = true) {
+  const text = msg.text.trim();
+  const fromCall = (msg.from_call || '').toUpperCase();
+  const toCall = (msg.to_call || '').toUpperCase();
+  const botCall = 'APRSOTA';
+  const isFromBot = fromCall === botCall || fromCall === 'OTA';
+  const isToBot = toCall === botCall || toCall === 'OTA';
+
+  // 1. Outgoing
+  if (isToBot && msg.direction === 'out') {
+    if (/^(HOST|QRV)\b/i.test(text)) {
+      if (isLive) {
+        isolationHostState.status = 'pending';
+        isolationHostState.hostRequestedAt = Date.now();
+        chaseRequestedAt = 0;
+        isolationHostState.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+      }
+    } else if (/^CHASE\b/i.test(text) || /^@[A-Za-z0-9/-]+\b/.test(text)) {
+      chaseRequestedAt = Date.now();
+      isolationHostState.hostRequestedAt = 0;
+      if (isolationHostState.status === 'pending' && !isolationHostState.confirmedOnAirAt) {
+        isolationHostState.status = 'off';
+        isolationHostState.pendingBeaconExpiresAt = null;
+      }
+    }
+    return;
+  }
+
+  // 2. Incoming from bot
+  if (isFromBot && msg.direction === 'in') {
+    if (/Send a position report within 5 mins/i.test(text)) {
+      const isChasePrompt = /to chase\b/i.test(text) ||
+        (chaseRequestedAt && (Date.now() - chaseRequestedAt < 300000) &&
+         (!isolationHostState.hostRequestedAt || chaseRequestedAt > isolationHostState.hostRequestedAt));
+
+      const isHostPrompt = /to go on the air\b/i.test(text) ||
+        (isolationHostState.hostRequestedAt && (Date.now() - isolationHostState.hostRequestedAt < 300000) &&
+         (!chaseRequestedAt || isolationHostState.hostRequestedAt >= chaseRequestedAt));
+
+      if (isChasePrompt) {
+        toasts.push({ type: 'info', text: 'chase_position_prompt' });
+        if (isolationHostState.status === 'pending' && !isolationHostState.confirmedOnAirAt) {
+          isolationHostState.status = 'off';
+          isolationHostState.pendingBeaconExpiresAt = null;
+        }
+      } else if (isHostPrompt) {
+        toasts.push({ type: 'warning', text: 'host_position_prompt' });
+        isolationHostState.status = 'pending';
+        isolationHostState.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
+      }
+    } else if (/is on the air from\s+([A-Za-z0-9]{4,6})/i.test(text)) {
+      const onAirMatch = text.match(/(?:^|\b)([A-Za-z0-9/-]+)\s+is on the air from\s+([A-Za-z0-9]{4,6})/i);
+      const announcedCall = onAirMatch ? onAirMatch[1].toUpperCase() : '';
+      const announcedBase = announcedCall.split('-')[0];
+      const myStation = (stationCall || '').toUpperCase();
+      const myBaseCall = myStation.split('-')[0];
+
+      const isMyStation = (myBaseCall && (announcedBase === myBaseCall || announcedCall === myBaseCall)) ||
+                          (myStation && announcedCall === myStation);
+
+      if (!isMyStation) {
+        toasts.push({ type: 'info', text: `spot_${announcedCall}` });
+        return;
+      }
+
+      isolationHostState.status = 'on_air';
+      isolationHostState.confirmedOnAirAt = Date.now();
+      if (onAirMatch) isolationHostState.grid = onAirMatch[2].toUpperCase();
+      const opNumMatch = text.match(/(?:(?:ops?|activations?)\/|Op\s*#?\s*)(\d+)/i);
+      if (opNumMatch) isolationHostState.opNumber = parseInt(opNumMatch[1], 10);
+      toasts.push({ type: 'success', text: `on_air_op_${isolationHostState.opNumber}` });
+    }
+  }
+}
+
+// 1. Chasing an activator must NOT trigger host pending state
+simulateProcessHostMessage({
+  direction: 'out',
+  to_call: 'APRSOTA',
+  from_call: 'W1AW-7',
+  text: 'CHASE K7ABC'
+});
+if (chaseRequestedAt === 0) throw new Error('chaseRequestedAt was not set on CHASE command');
+
+simulateProcessHostMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'Send a position report within 5 mins'
+});
+if (isolationHostState.status !== 'off') throw new Error(`Host status should remain off during chase, got: ${isolationHostState.status}`);
+if (!toasts.some(t => t.text === 'chase_position_prompt')) throw new Error('Expected chase position prompt toast');
+console.log('✓ Chaser beacon prompt isolation: Position report request for chase kept Host HUD off');
+
+// 2. Incoming on-air announcement for another station must NOT trigger host on_air
+simulateProcessHostMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'K7ABC-6 is on the air from FN00al Op #99'
+});
+if (isolationHostState.status !== 'off') throw new Error(`External station on-air announcement set local host status: ${isolationHostState.status}`);
+if (!toasts.some(t => t.text === 'spot_K7ABC-6')) throw new Error('Expected external spot toast for K7ABC-6');
+console.log('✓ External on-air filter: Other station activation announced without hijacking local Host HUD');
+
+// 3. Genuine HOST command followed by bot prompt transitions to pending
+simulateProcessHostMessage({
+  direction: 'out',
+  to_call: 'APRSOTA',
+  from_call: 'W1AW-7',
+  text: 'HOST POTA K-1234'
+});
+if (isolationHostState.status !== 'pending') throw new Error('Host status should be pending on HOST command');
+if (isolationHostState.hostRequestedAt === 0) throw new Error('hostRequestedAt was not set');
+
+simulateProcessHostMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'Send a position report within 5 mins'
+});
+if (isolationHostState.status !== 'pending') throw new Error('Host status should stay pending on host beacon prompt');
+if (!toasts.some(t => t.text === 'host_position_prompt')) throw new Error('Expected host position prompt toast');
+console.log('✓ Host beacon prompt handling: Legitimate host beacon prompt sets pending status and toast');
+
+// 4. Bot on-air announcement for local station transitions to on_air
+simulateProcessHostMessage({
+  direction: 'in',
+  from_call: 'APRSOTA',
+  to_call: 'W1AW-7',
+  text: 'W1AW-7 is on the air from EN91al Op #102'
+});
+if (isolationHostState.status !== 'on_air') throw new Error(`Host failed to go on_air for own callsign, got: ${isolationHostState.status}`);
+if (isolationHostState.opNumber !== 102) throw new Error(`Expected opNumber 102, got: ${isolationHostState.opNumber}`);
+if (isolationHostState.grid !== 'EN91AL') throw new Error(`Expected grid EN91AL, got: ${isolationHostState.grid}`);
+console.log('✓ Station on-air match: Own station activation announcement correctly engaged Host HUD on_air mode');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 19 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 20 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
