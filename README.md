@@ -160,7 +160,7 @@ git checkout v1.0.0-stable
 
 ## Automated Verification & Testing
 
-Run the comprehensive 21-suite end-to-end test suite:
+Run the comprehensive 22-suite end-to-end test suite:
 
 ```bash
 node test-e2e.mjs
@@ -181,6 +181,7 @@ Tests verify:
 * 1-Tap Chase worked state tracking and auto-refresh on new OP transitions
 * Chaser flow isolation vs host state machine and bot prompt disambiguation
 * Chaser pileup confirmation, 1-tap QSL drafting, and bot DE relay parsing
+* Host reply to chaser isolation (preventing host pileup QSLs from marking chaser spots as worked) and Shift+Click unmark support
 
 ---
 

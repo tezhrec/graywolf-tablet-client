@@ -60,7 +60,8 @@ class GraywolfClient {
         hostRequestedAt: 0,
         chasers: []
       },
-      chaseRequestedAt: 0
+      chaseRequestedAt: 0,
+      activeChaseTarget: null
     };
 
     this.dom = {};
@@ -411,6 +412,7 @@ class GraywolfClient {
         this.state.host.endedAt = null;
         this.state.host.hostRequestedAt = Date.now();
         this.state.chaseRequestedAt = 0;
+        this.state.activeChaseTarget = null;
         this.state.host.description = desc;
         this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
         this.renderHostHud();
@@ -533,6 +535,11 @@ class GraywolfClient {
         const call = (btn.dataset.callsign || '').toUpperCase();
         const opNum = btn.dataset.opNumber;
         const opKey = btn.dataset.opKey;
+        if (e.shiftKey && btn.classList.contains('worked')) {
+          this.unmarkOpChased(opKey);
+          this.showToast(`Reset worked status for ${call}`, 'info');
+          return;
+        }
         const spot = this.state.spots.find(s => {
           const sBase = (s.callsign || '').split('-')[0].toUpperCase();
           const matchesCall = sBase === call || (s.callsign && s.callsign.toUpperCase() === call);
@@ -2303,6 +2310,17 @@ class GraywolfClient {
     this.renderSpots();
   }
 
+  unmarkOpChased(opKey) {
+    if (!opKey || !this.state.chasedOps) return;
+    delete this.state.chasedOps[opKey];
+    try {
+      localStorage.setItem('gw_chased_ops', JSON.stringify(this.state.chasedOps));
+    } catch (err) {
+      console.warn('[STORAGE] Failed to persist chased ops:', err);
+    }
+    this.renderSpots();
+  }
+
   createSpotCardHtml(op, distObj) {
     const baseCall = this.escapeHtml((op.callsign || 'N0CALL').toUpperCase());
     const station = this.escapeHtml(op.station || op.callsign || baseCall);
@@ -2386,6 +2404,7 @@ class GraywolfClient {
     const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
 
     this.state.chaseRequestedAt = Date.now();
+    this.state.activeChaseTarget = baseCall;
     this.state.host.hostRequestedAt = 0;
     if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
       this.state.host.status = 'off';
@@ -2466,25 +2485,43 @@ class GraywolfClient {
         const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
         const msgTime = Date.parse(msg.sent_at || msg.created_at || 0) || Date.now();
 
-        const matchingSpot = this.state.spots?.find(s => {
-          const sBase = (s.callsign || '').split('-')[0].toUpperCase();
-          if (sBase !== chasedTarget) return false;
+        // Host Activation Guard:
+        // When running an OP (on_air), do NOT mark this station's OP as chased if:
+        // 1. This station is in our chaser pileup queue (they contacted us; we are replying to them)
+        // 2. We did not explicitly initiate a chase for this specific target
+        const isHostOnAir = this.state.host && this.state.host.status === 'on_air';
+        const isMyChaser = isHostOnAir && Boolean(
+          this.state.host.chasers?.some(c => c.callsign === chasedTarget || c.baseCall === chasedTarget)
+        );
+        const isExplicitChase = Boolean(
+          this.state.activeChaseTarget === chasedTarget &&
+          this.state.chaseRequestedAt &&
+          (Date.now() - this.state.chaseRequestedAt < 300000)
+        );
 
-          // Message must be transmitted after or during this activation
-          const spotStart = Date.parse(s.on_air_at || s.started_at || 0);
-          if (spotStart && msgTime < spotStart - 60000) return false;
+        if (isHostOnAir && (isMyChaser || !isExplicitChase)) {
+          // Host is replying to or working a chaser on their own OP - do NOT mark the chaser's OP as worked!
+        } else {
+          const matchingSpot = this.state.spots?.find(s => {
+            const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+            if (sBase !== chasedTarget) return false;
 
-          // Spot must not have ended long before message was sent
-          const spotEnd = Date.parse(s.ended_at || s.expires_at || 0);
-          if (spotEnd && msgTime > spotEnd + 300000) return false;
+            // Message must be transmitted after or during this activation
+            const spotStart = Date.parse(s.on_air_at || s.started_at || 0);
+            if (spotStart && msgTime < spotStart - 60000) return false;
 
-          return true;
-        });
+            // Spot must not have ended long before message was sent
+            const spotEnd = Date.parse(s.ended_at || s.expires_at || 0);
+            if (spotEnd && msgTime > spotEnd + 300000) return false;
 
-        if (matchingSpot) {
-          const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
-          const opKey = rawOpNum !== null ? `${chasedTarget}:${rawOpNum}` : `${chasedTarget}:current`;
-          this.markOpChased(opKey, { baseCall: chasedTarget, opNumber: rawOpNum });
+            return true;
+          });
+
+          if (matchingSpot) {
+            const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
+            const opKey = rawOpNum !== null ? `${chasedTarget}:${rawOpNum}` : `${chasedTarget}:current`;
+            this.markOpChased(opKey, { baseCall: chasedTarget, opNumber: rawOpNum });
+          }
         }
       }
     }
@@ -2506,6 +2543,7 @@ class GraywolfClient {
           this.state.host.endedAt = null;
           this.state.host.hostRequestedAt = Date.now();
           this.state.chaseRequestedAt = 0;
+          this.state.activeChaseTarget = null;
           this.state.host.description = text.replace(/^(HOST|QRV)\s*/i, '');
           this.state.host.pendingBeaconExpiresAt = Date.now() + 5 * 60 * 1000;
           this.renderHostHud();
@@ -2518,6 +2556,7 @@ class GraywolfClient {
           this.state.host.status = 'ended';
           this.state.host.endedAt = Date.now();
           this.state.host.hostRequestedAt = 0;
+          this.state.activeChaseTarget = null;
           this.state.host.chasers = [];
           this.renderHostHud();
         }
@@ -2573,12 +2612,26 @@ class GraywolfClient {
 
       // If not a host QSL, check if this is an explicit CHASE command or chasing while OFF/PENDING
       if (isToBot && (/^CHASE\b/i.test(text) || (/^@[A-Za-z0-9/-]+\b/.test(text) && this.state.host.status !== 'on_air'))) {
+        const chaseMatch = text.match(/^CHASE\s+([A-Za-z0-9/-]+)/i);
+        const chasedCall = chaseMatch ? chaseMatch[1].split('-')[0].toUpperCase() : null;
         this.state.chaseRequestedAt = Date.now();
+        if (chasedCall) this.state.activeChaseTarget = chasedCall;
         this.state.host.hostRequestedAt = 0;
         if (this.state.host.status === 'pending' && !this.state.host.confirmedOnAirAt) {
           this.state.host.status = 'off';
           this.state.host.pendingBeaconExpiresAt = null;
           this.renderHostHud();
+        }
+        if (chasedCall) {
+          const matchingSpot = this.state.spots?.find(s => {
+            const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+            return sBase === chasedCall;
+          });
+          if (matchingSpot) {
+            const rawOpNum = matchingSpot.number ?? matchingSpot.op ?? null;
+            const opKey = rawOpNum !== null ? `${chasedCall}:${rawOpNum}` : `${chasedCall}:current`;
+            this.markOpChased(opKey, { baseCall: chasedCall, opNumber: rawOpNum });
+          }
         }
         return;
       }

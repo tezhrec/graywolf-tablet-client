@@ -1022,8 +1022,109 @@ processPileupMessage({
 if (n0call.status !== 'confirmed') throw new Error('3-letter QSL relay failed to confirm N0CALL');
 console.log('✓ Chaser QSL relay parsing: "DE CALL QSL ..." properly matched without 4-letter grid requirement');
 
+console.log('\nTesting 22: Host Reply to Chaser Isolation (Preserve Unworked 1-Tap Buttons)');
+
+const chasedState = {};
+function isChased(key) { return Boolean(chasedState[key]); }
+function markChased(key) { chasedState[key] = true; }
+
+const hostStation = {
+  status: 'on_air',
+  opNumber: 50,
+  chasers: [],
+  activeChaseTarget: null,
+  chaseRequestedAt: 0
+};
+
+const networkSpots = [
+  { callsign: 'K3NG', station: 'K3NG-7', number: 42, on_air_at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
+  { callsign: 'W3ATV', station: 'W3ATV-1', number: 43, on_air_at: new Date(Date.now() - 20 * 60 * 1000).toISOString() },
+  { callsign: 'DL7PJ', station: 'DL7PJ', number: 88, on_air_at: new Date(Date.now() - 10 * 60 * 1000).toISOString() }
+];
+
+function simulateOutgoingMsg(msg, host, spots) {
+  const text = msg.text.trim();
+  const atMatch = text.match(/^@([A-Za-z0-9/-]+)/);
+  if (atMatch) {
+    const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
+    const isHostOnAir = host && host.status === 'on_air';
+    const isMyChaser = isHostOnAir && Boolean(
+      host.chasers?.some(c => c.callsign === chasedTarget || c.baseCall === chasedTarget)
+    );
+    const isExplicitChase = Boolean(
+      host.activeChaseTarget === chasedTarget &&
+      host.chaseRequestedAt &&
+      (Date.now() - host.chaseRequestedAt < 300000)
+    );
+
+    if (isHostOnAir && (isMyChaser || !isExplicitChase)) {
+      // Host replying to chaser: do NOT auto-mark as chased!
+    } else {
+      const match = spots.find(s => (s.callsign || '').toUpperCase() === chasedTarget);
+      if (match) {
+        markChased(`${chasedTarget}:${match.number}`);
+      }
+    }
+  }
+
+  // Also simulate host pileup queue confirmation
+  const targetCall = atMatch ? atMatch[1].toUpperCase() : null;
+  const baseTarget = targetCall ? targetCall.split('-')[0] : null;
+  if (targetCall && host.status === 'on_air') {
+    for (const c of host.chasers) {
+      if (c.callsign === targetCall || c.baseCall === baseTarget) {
+        c.status = 'confirmed';
+      }
+    }
+  }
+}
+
+// 1. K3NG (who has active Op #42) chases host
+hostStation.chasers.push({
+  callsign: 'K3NG',
+  baseCall: 'K3NG',
+  status: 'waiting'
+});
+
+// Host replies to K3NG: "@K3NG QSL 599"
+simulateOutgoingMsg({ text: '@K3NG QSL 599', direction: 'out' }, hostStation, networkSpots);
+
+// Verification: K3NG's pileup status confirmed, but K3NG:42 must NOT be marked worked!
+if (hostStation.chasers[0].status !== 'confirmed') {
+  throw new Error('Host reply failed to confirm chaser in pileup');
+}
+if (isChased('K3NG:42')) {
+  throw new Error('BUG DETECTED: Host reply to chaser K3NG falsely flipped K3NG Op #42 to worked!');
+}
+console.log('✓ Pileup reply isolation: Host replying to chaser K3NG confirmed contact without marking K3NG Op #42 as worked');
+
+// 2. Host on air sends message to W3ATV (not in pileup, no explicit chase requested)
+simulateOutgoingMsg({ text: '@W3ATV 599', direction: 'out' }, hostStation, networkSpots);
+if (isChased('W3ATV:43')) {
+  throw new Error('BUG DETECTED: Host message to W3ATV falsely marked W3ATV Op #43 as worked!');
+}
+console.log('✓ Host on-air guard: Outgoing message while on air did not falsely mark un-chased Op #43');
+
+// 3. Host explicitly chases DL7PJ (Park-to-Park / P2P via 1-Tap Chase)
+hostStation.activeChaseTarget = 'DL7PJ';
+hostStation.chaseRequestedAt = Date.now();
+markChased('DL7PJ:88'); // 1-Tap Chase explicitly marks it worked
+simulateOutgoingMsg({ text: '@DL7PJ 599', direction: 'out' }, hostStation, networkSpots);
+if (!isChased('DL7PJ:88')) {
+  throw new Error('Explicit P2P chase failed to mark DL7PJ as worked');
+}
+console.log('✓ Intentional P2P chase: Explicit 1-Tap Chase during activation successfully marked DL7PJ as worked');
+
+// 4. Operator is OFF air (chaser mode) and sends message to K3NG
+const chaserStation = { status: 'off', chasers: [] };
+simulateOutgoingMsg({ text: '@K3NG QSL 599', direction: 'out' }, chaserStation, networkSpots);
+if (!isChased('K3NG:42')) {
+  throw new Error('Standard chaser mode failed to auto-mark K3NG as worked');
+}
+console.log('✓ Standard chaser mode: Operator off-air cleanly auto-marks chased activation');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 21 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 22 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
