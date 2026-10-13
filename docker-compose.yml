@@ -1,0 +1,20 @@
+services:
+  graywolf-tablet:
+    build: .
+    image: graywolf-tablet-client:latest
+    container_name: graywolf-tablet
+    restart: unless-stopped
+    # Use host networking on Linux / Raspberry Pi so the container can
+    # connect directly to the local Graywolf daemon running on 127.0.0.1:8080.
+    # If running on macOS/Windows or targeting a remote Graywolf host IP,
+    # comment out network_mode and uncomment the 'ports' section below.
+    network_mode: host
+    # ports:
+    #   - "3000:3000"
+    environment:
+      - GRAYWOLF_URL=http://127.0.0.1:8080
+      - PORT=3000
+    volumes:
+      # Persist APRSOTA API tokens, bot callsign, and station preferences.
+      # Note: Create config.json beforehand if not present: touch config.json
+      - ./config.json:/app/config.json

@@ -78,6 +78,45 @@ Simulates a live Graywolf station with realistic packet counters, incoming APRS 
 node server.mjs --mock --port 3000
 ```
 
+### 3. Run with Docker / Docker Compose (Raspberry Pi & Linux)
+The application includes a lightweight multi-arch Alpine container (< 30 MB runtime RAM) optimized for Raspberry Pi 4/5 (ARM64) and x86_64:
+
+```bash
+# Ensure config file exists on host for persistent volume mount
+touch config.json
+
+# Build and start in the background
+docker compose up -d
+```
+
+Or using standalone `docker run`:
+```bash
+# Connected to local Graywolf daemon via host networking (Linux / Pi)
+docker run -d \
+  --name graywolf-tablet \
+  --restart unless-stopped \
+  --network host \
+  -e GRAYWOLF_URL="http://127.0.0.1:8080" \
+  -v "$(pwd)/config.json:/app/config.json" \
+  graywolf-tablet-client
+
+# Or run in bridge mode pointing to a remote Graywolf IP
+docker run -d \
+  --name graywolf-tablet \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e GRAYWOLF_URL="http://10.0.0.122:8080" \
+  -v "$(pwd)/config.json:/app/config.json" \
+  graywolf-tablet-client
+
+# Or run in Simulated Mock Mode
+docker run -d \
+  --name graywolf-tablet \
+  -p 3000:3000 \
+  -e MOCK=true \
+  graywolf-tablet-client
+```
+
 ---
 
 ## Configuration & APRS OTA API
@@ -121,7 +160,7 @@ git checkout v1.0.0-stable
 
 ## Automated Verification & Testing
 
-Run the comprehensive 12-suite end-to-end test suite:
+Run the comprehensive 21-suite end-to-end test suite:
 
 ```bash
 node test-e2e.mjs
@@ -132,18 +171,41 @@ Tests verify:
 * Station configuration and beacon retrieval
 * Manual beacon triggering (`POST /api/beacons/{id}/send`)
 * Conversation listing and thread retrieval
-* Message transmission
+* Message transmission and ACK tracking
 * Static asset delivery and APRS OTA DOM markup
 * Live APRS OTA spots feed (`/api/ota/now`)
 * Polite 60-second upstream caching (`X-Cache: HIT`)
 * Dynamic configuration updates (`POST /client/ota-config`)
 * Great-circle Haversine distance and forward azimuth bearing math
+* Host / Activation Assistant HUD lifecycle, anti-flapping grace period, and pileup queue
+* 1-Tap Chase worked state tracking and auto-refresh on new OP transitions
+* Chaser flow isolation vs host state machine and bot prompt disambiguation
+* Chaser pileup confirmation, 1-tap QSL drafting, and bot DE relay parsing
 
 ---
 
 ## Deploying on a Raspberry Pi (Kiosk Mode)
 
-### 1. Install as a Systemd Service
+### Option A: Docker Compose (Recommended for Raspberry Pi 4 & 5)
+
+Using Docker isolates the runtime and automatically handles restart-on-boot:
+
+1. **Install Docker** on Raspberry Pi OS (if not already installed):
+   ```bash
+   curl -sSL https://get.docker.com | sh
+   sudo usermod -aG docker $USER
+   ```
+   *(Log out and back in for group changes to take effect).*
+
+2. **Start the Container**:
+   ```bash
+   cd ~/graywolf-tablet-client
+   touch config.json
+   docker compose up -d
+   ```
+   The container runs using `network_mode: host` to communicate directly with Graywolf on `127.0.0.1:8080`, with auto-restart on system reboot (`restart: unless-stopped`).
+
+### Option B: Native Systemd Service
 Create `/etc/systemd/system/graywolf-tablet.service`:
 
 ```ini
@@ -170,7 +232,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now graywolf-tablet.service
 ```
 
-### 2. Autostart Chromium in Fullscreen Kiosk Mode
+### Autostart Chromium in Fullscreen Kiosk Mode
 In your desktop autostart configuration (`~/.config/wayfire.ini` on Wayland or `~/.config/lxsession/LXDE-pi/autostart` on X11):
 
 ```bash
