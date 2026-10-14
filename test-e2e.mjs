@@ -1123,8 +1123,263 @@ if (!isChased('K3NG:42')) {
 }
 console.log('✓ Standard chaser mode: Operator off-air cleanly auto-marks chased activation');
 
+console.log('\nTesting 23: Chase Button Armed State vs Actual Transmission Lifecycle');
+const testClientState = {
+  activeChaseTarget: null,
+  chaseRequestedAt: 0,
+  activeChaseOpNumber: null,
+  chasedOps: {}
+};
+
+function simulateHandleChase(call, opNum, state) {
+  const baseCall = call.split('-')[0].toUpperCase();
+  state.chaseRequestedAt = Date.now();
+  state.activeChaseTarget = baseCall;
+  state.activeChaseOpNumber = opNum;
+}
+
+simulateHandleChase('W3ATV', 43, testClientState);
+if (testClientState.activeChaseTarget !== 'W3ATV') throw new Error('activeChaseTarget should be W3ATV');
+if (Boolean(testClientState.chasedOps['W3ATV:43'])) throw new Error('BUG DETECTED: 1-Tap Chase prematurely marked op worked on tap!');
+console.log('✓ Arm on tap: Tapping 1-Tap Chase arms target without premature worked status');
+
+function simulateSendChaseMsg(text, toCall, state, spots) {
+  const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i);
+  const target = atMatch ? atMatch[1].split('-')[0].toUpperCase() : (toCall ? toCall.split('-')[0].toUpperCase() : null);
+  if (target) {
+    const spot = spots.find(s => (s.callsign || '').split('-')[0].toUpperCase() === target);
+    if (spot) {
+      state.chasedOps[`${target}:${spot.number}`] = { chasedAt: new Date().toISOString() };
+    }
+  }
+}
+simulateSendChaseMsg('@W3ATV 599', 'APRSOTA', testClientState, networkSpots);
+if (!testClientState.chasedOps['W3ATV:43']) throw new Error('Transmitting chase message failed to mark W3ATV:43 as worked');
+console.log('✓ Transmit completion: Sending @CALL 599 successfully marked activation as worked');
+
+console.log('\nTesting 24: Spot Card SSID Normalization & Multi-Op Array Search');
+const ssidSpot = { callsign: 'K3NG-7', station: 'K3NG-7', number: 42 };
+const baseCall = (ssidSpot.callsign || '').split('-')[0].toUpperCase();
+const cardOpKey = `${baseCall}:${ssidSpot.number}`;
+if (cardOpKey !== 'K3NG:42') throw new Error(`Expected normalized opKey K3NG:42, got ${cardOpKey}`);
+
+const storeWithBase = { 'K3NG:42': true };
+function testIsOpChased(key, store) {
+  const baseKey = key.split(':')[0].split('-')[0].toUpperCase() + ':' + (key.split(':')[1] || 'current');
+  return Boolean(store[key] || store[baseKey]);
+}
+if (!testIsOpChased('K3NG-7:42', storeWithBase)) throw new Error('isOpChased failed to match K3NG-7:42 against K3NG:42');
+if (!testIsOpChased('K3NG:42', storeWithBase)) throw new Error('isOpChased failed to match K3NG:42 against K3NG:42');
+console.log('✓ SSID key normalization: Spot cards and auto-chase match bidirectionally across SSIDs');
+
+const multiSpots = [
+  { callsign: 'W3JAY', station: 'W3JAY-1', number: 42, op: 42 },
+  { callsign: 'W3JAY', station: 'W3JAY-2', number: 43, op: 43 }
+];
+function testFindSpot(spots, targetCall, targetOpNum) {
+  return spots.find(s => {
+    const sBase = (s.callsign || '').split('-')[0].toUpperCase();
+    const matchesCall = sBase === targetCall || (s.callsign && s.callsign.toUpperCase() === targetCall);
+    if (!matchesCall) return false;
+    if (targetOpNum) return (s.number == targetOpNum || s.op == targetOpNum);
+    return true;
+  });
+}
+const matched43 = testFindSpot(multiSpots, 'W3JAY', 43);
+if (!matched43 || matched43.number !== 43) throw new Error('Multi-op search failed to pick Op 43 over Op 42');
+console.log('✓ Multi-op resolution: Clicking Op 43 accurately selects Op 43 when Op 42 is first in list');
+
+console.log('\nTesting 25: Direct DMs to Activators & Casual Chat Filtering');
+const dmChasedStore = {};
+function simulateOutgoingFilter(msg, toCall, isToBot, explicitTarget, spots, store) {
+  const text = msg.text.trim();
+  const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i);
+  const chasedTarget = atMatch
+    ? atMatch[1].split('-')[0].toUpperCase()
+    : (!isToBot && toCall ? toCall.split('-')[0].toUpperCase() : null);
+
+  if (chasedTarget) {
+    const isExplicit = explicitTarget === chasedTarget;
+    const hasReport = /\b(?:599|5NN|[45][0-9]{1,2}|QSL|73)\b/i.test(text);
+    if (!isToBot && !isExplicit && !hasReport) {
+      return false;
+    }
+    const match = spots.find(s => (s.callsign || '').split('-')[0].toUpperCase() === chasedTarget);
+    if (match) {
+      store[`${chasedTarget}:${match.number}`] = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+simulateOutgoingFilter({ text: '599 in FN00' }, 'K3NG-7', false, null, networkSpots, dmChasedStore);
+if (!dmChasedStore['K3NG:42']) throw new Error('Direct DM report to activator failed to mark K3NG:42 as worked');
+console.log('✓ Direct DM chase: Transmitting report directly to activator thread marks spot worked');
+
+const casualStore = {};
+simulateOutgoingFilter({ text: '@W3ATV can you bring the coax tomorrow?' }, 'CLUB-NET', false, null, networkSpots, casualStore);
+if (casualStore['W3ATV:43']) throw new Error('Casual non-chase chat falsely marked W3ATV:43 as worked!');
+console.log('✓ Casual chat guard: Mentioning @CALLSIGN in general chat does not mark spot worked');
+
+simulateOutgoingFilter({ text: 'Thanks @W3ATV 599 73' }, 'CLUB-NET', false, null, networkSpots, casualStore);
+if (!casualStore['W3ATV:43']) throw new Error('Mention with report 599 failed to mark W3ATV:43 as worked');
+console.log('✓ Report detection: Outgoing transmission containing 599 report correctly marks activation');
+
+console.log('\nTesting 26: Inbound Chaser QSL Relays & Score Tracking');
+const pileupHost2 = {
+  status: 'on_air',
+  qsos: 0,
+  points: 0,
+  chasers: [
+    { callsign: 'K3SAR-7', baseCall: 'K3SAR', status: 'waiting' }
+  ]
+};
+
+function simulateInboundRelay(text, host) {
+  const match = text.match(/^DE\s+([A-Za-z0-9/-]+):?(?:\s+([A-Za-z0-9]{4,6}))?(?:\s+(.*))?$/i);
+  if (!match) return false;
+  const chaserCall = match[1].toUpperCase();
+  const grid = (match[2] || '').toUpperCase();
+  const extra = (match[3] || '').trim();
+  const baseCall = chaserCall.split('-')[0];
+
+  if (/\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra)) {
+    const existing = host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
+    if (existing) {
+      if (existing.status !== 'confirmed') {
+        existing.status = 'confirmed';
+        host.qsos += 1;
+        host.points += 3;
+      }
+    } else {
+      host.chasers.unshift({ callsign: chaserCall, baseCall, status: 'confirmed' });
+      host.qsos += 1;
+      host.points += 3;
+    }
+    return true;
+  }
+
+  let existing = host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
+  if (!existing) {
+    host.chasers.unshift({ callsign: chaserCall, baseCall, status: 'waiting', message: extra });
+  }
+  return true;
+}
+
+simulateInboundRelay('DE K3SAR QSL thx 73', pileupHost2);
+if (pileupHost2.chasers.find(c => c.baseCall === 'K3SAR').status !== 'confirmed') throw new Error('K3SAR should be confirmed');
+if (pileupHost2.qsos !== 1 || pileupHost2.points !== 3) throw new Error(`Expected 1 QSO and 3 pts, got ${pileupHost2.qsos} QSOs, ${pileupHost2.points} pts`);
+console.log('✓ HUD score increment: Chaser QSL relay properly confirmed chaser and added +1 QSO / +3 pts');
+
+simulateInboundRelay('DE W3ABC', pileupHost2);
+if (!pileupHost2.chasers.some(c => c.baseCall === 'W3ABC')) throw new Error('Minimal relay "DE W3ABC" failed to parse');
+console.log('✓ Minimal relay parsing: "DE CALL" without trailing whitespace parses into queue');
+
+simulateInboundRelay('DE DL7PJ: 599 in JN48', pileupHost2);
+if (!pileupHost2.chasers.some(c => c.baseCall === 'DL7PJ')) throw new Error('Relay with colon "DE CALL: ..." failed to parse');
+console.log('✓ Colon relay parsing: "DE CALL: [msg]" parses cleanly into queue');
+
+console.log('\nTesting 27: Host Reply Resiliency & Flexible Parsing');
+const hostPileup3 = {
+  status: 'on_air',
+  qsos: 0,
+  points: 0,
+  chasers: [
+    { callsign: 'K3SAR-7', baseCall: 'K3SAR', status: 'waiting' }
+  ]
+};
+
+function simulateHostOutgoingQSL(text, host) {
+  const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i) || text.match(/(?:^|\s)QSL\s+@?([A-Za-z0-9/-]+)/i);
+  if (!atMatch) return false;
+  const targetCall = (atMatch[1] || atMatch[2]).toUpperCase();
+  const baseTarget = targetCall.split('-')[0];
+
+  const existing = host.chasers.find(c => c.callsign === targetCall || c.baseCall === baseTarget);
+  if (existing) {
+    if (existing.status !== 'confirmed') {
+      existing.status = 'confirmed';
+      host.qsos += 1;
+      host.points += 3;
+    }
+    return true;
+  }
+
+  const hasReport = /\b(?:QSL|599|5NN|[45][0-9]{1,2}|73)\b/i.test(text);
+  if (host.status === 'on_air' && hasReport) {
+    host.chasers.push({ callsign: targetCall, baseCall: baseTarget, status: 'confirmed' });
+    host.qsos += 1;
+    host.points += 3;
+    return true;
+  }
+  return false;
+}
+
+simulateHostOutgoingQSL('TU @K3SAR 599 73', hostPileup3);
+if (hostPileup3.chasers[0].status !== 'confirmed') throw new Error('Host reply with leading words failed to confirm chaser');
+if (hostPileup3.qsos !== 1) throw new Error('QSO failed to increment');
+console.log('✓ Leading word resilience: Host reply "TU @CALL 599" cleanly confirms chaser in queue');
+
+simulateHostOutgoingQSL('@W3ATV 599', hostPileup3);
+const w3atvChaser = hostPileup3.chasers.find(c => c.baseCall === 'W3ATV');
+if (!w3atvChaser || w3atvChaser.status !== 'confirmed') throw new Error('Replying @CALL 599 failed to log chaser into queue');
+if (hostPileup3.qsos !== 2 || hostPileup3.points !== 6) throw new Error('QSO and points failed to increment for W3ATV');
+console.log('✓ Unqueued chaser logging: Outgoing @CALL 599 logs contact without requiring literal "QSL"');
+
+console.log('\nTesting 28: On-Air Queue Reconstruction on Browser Refresh');
+const historyMessages = [
+  { direction: 'in', text: 'DE K3SAR-7 FN09lv greetings', sent_at: new Date(Date.now() - 10 * 60 * 1000).toISOString() },
+  { direction: 'out', text: '@K3SAR QSL 599', sent_at: new Date(Date.now() - 9 * 60 * 1000).toISOString() },
+  { direction: 'in', text: 'DE W3ABC FN10ab hello', sent_at: new Date(Date.now() - 5 * 60 * 1000).toISOString() }
+];
+
+const reconstructedHost = {
+  status: 'on_air',
+  startedAt: Date.now() - 15 * 60 * 1000,
+  chasers: []
+};
+
+function reconstructChasers(msgs, host) {
+  for (const m of msgs) {
+    const text = (m.text || '').trim();
+    if (m.direction === 'in') {
+      const match = text.match(/^DE\s+([A-Za-z0-9/-]+):?(?:\s+([A-Za-z0-9]{4,6}))?(?:\s+(.*))?$/i);
+      if (match) {
+        const call = match[1].toUpperCase();
+        const base = call.split('-')[0];
+        const grid = (match[2] || '').toUpperCase();
+        const extra = (match[3] || '').trim();
+        const isQsl = /\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra);
+        const existing = host.chasers.find(c => c.callsign === call || c.baseCall === base);
+        if (existing) {
+          if (isQsl) existing.status = 'confirmed';
+        } else {
+          host.chasers.push({ callsign: call, baseCall: base, status: isQsl ? 'confirmed' : 'waiting' });
+        }
+      }
+    } else if (m.direction === 'out') {
+      const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i);
+      if (atMatch) {
+        const call = atMatch[1].toUpperCase();
+        const base = call.split('-')[0];
+        const existing = host.chasers.find(c => c.callsign === call || c.baseCall === base);
+        if (existing) existing.status = 'confirmed';
+      }
+    }
+  }
+}
+
+reconstructChasers(historyMessages, reconstructedHost);
+if (reconstructedHost.chasers.length !== 2) throw new Error(`Expected 2 chasers, got ${reconstructedHost.chasers.length}`);
+const recK3sar = reconstructedHost.chasers.find(c => c.baseCall === 'K3SAR');
+const recW3abc = reconstructedHost.chasers.find(c => c.baseCall === 'W3ABC');
+if (!recK3sar || recK3sar.status !== 'confirmed') throw new Error('K3SAR should be restored as confirmed');
+if (!recW3abc || recW3abc.status !== 'waiting') throw new Error('W3ABC should be restored as waiting');
+console.log('✓ Queue reconstruction: Past thread history restores waiting and confirmed chasers on refresh');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 22 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 28 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);

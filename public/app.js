@@ -544,7 +544,7 @@ class GraywolfClient {
           const sBase = (s.callsign || '').split('-')[0].toUpperCase();
           const matchesCall = sBase === call || (s.callsign && s.callsign.toUpperCase() === call);
           if (!matchesCall) return false;
-          if (opNum && (s.number == opNum || s.op == opNum)) return true;
+          if (opNum) return (s.number == opNum || s.op == opNum);
           return true;
         });
         this.handleChase(call, spot, opKey);
@@ -2291,17 +2291,22 @@ class GraywolfClient {
   }
 
   isOpChased(opKey) {
-    if (!opKey) return false;
-    return Boolean(this.state.chasedOps && this.state.chasedOps[opKey]);
+    if (!opKey || !this.state.chasedOps) return false;
+    const baseKey = opKey.split(':')[0].split('-')[0].toUpperCase() + ':' + (opKey.split(':')[1] || 'current');
+    return Boolean(this.state.chasedOps[opKey] || this.state.chasedOps[baseKey]);
   }
 
   markOpChased(opKey, details = {}) {
     if (!opKey) return;
     if (!this.state.chasedOps) this.state.chasedOps = {};
+    const baseKey = opKey.split(':')[0].split('-')[0].toUpperCase() + ':' + (opKey.split(':')[1] || 'current');
     this.state.chasedOps[opKey] = {
       chasedAt: new Date().toISOString(),
       ...details
     };
+    if (baseKey !== opKey) {
+      this.state.chasedOps[baseKey] = this.state.chasedOps[opKey];
+    }
     try {
       localStorage.setItem('gw_chased_ops', JSON.stringify(this.state.chasedOps));
     } catch (err) {
@@ -2312,7 +2317,9 @@ class GraywolfClient {
 
   unmarkOpChased(opKey) {
     if (!opKey || !this.state.chasedOps) return;
+    const baseKey = opKey.split(':')[0].split('-')[0].toUpperCase() + ':' + (opKey.split(':')[1] || 'current');
     delete this.state.chasedOps[opKey];
+    delete this.state.chasedOps[baseKey];
     try {
       localStorage.setItem('gw_chased_ops', JSON.stringify(this.state.chasedOps));
     } catch (err) {
@@ -2322,8 +2329,9 @@ class GraywolfClient {
   }
 
   createSpotCardHtml(op, distObj) {
-    const baseCall = this.escapeHtml((op.callsign || 'N0CALL').toUpperCase());
-    const station = this.escapeHtml(op.station || op.callsign || baseCall);
+    const rawCall = (op.callsign || 'N0CALL').toUpperCase();
+    const baseCall = this.escapeHtml(rawCall.split('-')[0]);
+    const station = this.escapeHtml((op.station || op.callsign || baseCall).toUpperCase());
     const rawOpNum = (op.number !== undefined && op.number !== null) ? op.number : (op.op !== undefined && op.op !== null ? op.op : null);
     const opNumber = rawOpNum !== null ? `Op #${rawOpNum}` : '';
     const opKey = rawOpNum !== null ? `${baseCall}:${rawOpNum}` : (op.on_air_at || op.started_at ? `${baseCall}:${op.on_air_at || op.started_at}` : `${baseCall}:current`);
@@ -2412,10 +2420,9 @@ class GraywolfClient {
       this.renderHostHud();
     }
 
-    // Mark OP as chased/worked
+    // Record explicit chase target and op number for auto-marking upon RF transmission
     const rawOpNum = spot ? (spot.number ?? spot.op ?? null) : null;
-    const opKey = directOpKey || (rawOpNum !== null ? `${baseCall}:${rawOpNum}` : `${baseCall}:current`);
-    this.markOpChased(opKey, { baseCall, opNumber: rawOpNum });
+    this.state.activeChaseOpNumber = rawOpNum;
 
     // 1. Locate or create thread with the OTA bot
     let botConv = this.state.conversations.find(c =>
@@ -2478,11 +2485,14 @@ class GraywolfClient {
     const isFromBot = fromCall === 'APRSOTA' || fromCall === 'OTA' || fromCall === botCall;
     const isToBot = toCall === 'APRSOTA' || toCall === 'OTA' || toCall === botCall;
 
-    // Auto-mark OP as chased across all connected devices when outgoing @CALLSIGN is broadcast live
+    // Auto-mark OP as chased across all connected devices when outgoing @CALLSIGN or direct DM is broadcast live
     if (isLive && msg.direction === 'out') {
-      const atMatch = text.match(/^@([A-Za-z0-9/-]+)/);
-      if (atMatch) {
-        const chasedTarget = atMatch[1].split('-')[0].toUpperCase();
+      const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i);
+      const chasedTarget = atMatch
+        ? atMatch[1].split('-')[0].toUpperCase()
+        : (!isToBot && toCall ? toCall.split('-')[0].toUpperCase() : null);
+
+      if (chasedTarget) {
         const msgTime = Date.parse(msg.sent_at || msg.created_at || 0) || Date.now();
 
         // Host Activation Guard:
@@ -2498,9 +2508,12 @@ class GraywolfClient {
           this.state.chaseRequestedAt &&
           (Date.now() - this.state.chaseRequestedAt < 300000)
         );
+        const hasReportOrQsl = /\b(?:599|5NN|[45][0-9]{1,2}|QSL|73)\b/i.test(text);
 
         if (isHostOnAir && (isMyChaser || !isExplicitChase)) {
           // Host is replying to or working a chaser on their own OP - do NOT mark the chaser's OP as worked!
+        } else if (!isHostOnAir && !isToBot && !isExplicitChase && !hasReportOrQsl) {
+          // Off-air casual chat: do not mark as chased unless sent to bot, explicit chase, or has report/QSL
         } else {
           const matchingSpot = this.state.spots?.find(s => {
             const sBase = (s.callsign || '').split('-')[0].toUpperCase();
@@ -2564,8 +2577,8 @@ class GraywolfClient {
       }
 
       // Check if this outgoing message is addressing a chaser or confirming QSL!
-      // Patterns: "@CALLSIGN QSL ...", "@CALLSIGN 599", "QSL @CALLSIGN", "QSL CALLSIGN", or direct DM to CALLSIGN
-      const atMatch = text.match(/^(?:@([A-Za-z0-9/-]+)|QSL\s+@?([A-Za-z0-9/-]+))\b/i);
+      // Patterns: "@CALLSIGN QSL ...", "@CALLSIGN 599", "TU @CALLSIGN 599", "QSL @CALLSIGN", "QSL CALLSIGN", or direct DM to CALLSIGN
+      const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i) || text.match(/(?:^|\s)QSL\s+@?([A-Za-z0-9/-]+)/i);
       const targetCall = atMatch ? (atMatch[1] || atMatch[2]).toUpperCase() : (!isToBot ? toCall : null);
       const baseTarget = targetCall ? targetCall.split('-')[0] : null;
 
@@ -2586,8 +2599,9 @@ class GraywolfClient {
           }
         }
 
-        // If not in pileup queue yet, but host is on_air and message contains QSL:
-        if (!qslConfirmed && this.state.host.status === 'on_air' && /\bQSL\b/i.test(text)) {
+        // If not in pileup queue yet, but host is on_air and message contains report or QSL:
+        const hasReportOrQsl = /\b(?:QSL|599|5NN|[45][0-9]{1,2}|73)\b/i.test(text);
+        if (!qslConfirmed && this.state.host.status === 'on_air' && hasReportOrQsl) {
           this.state.host.chasers.push({
             callsign: targetCall,
             baseCall: baseTarget,
@@ -2722,9 +2736,9 @@ class GraywolfClient {
         }
       }
       // (c) Bot relay from a chaser: "DE <CALLSIGN-SSID> <GRID> <optional message>" or "DE <CALLSIGN-SSID> QSL ..."
-      else if (/^DE\s+([A-Za-z0-9/-]+)\s+(?:([A-Za-z0-9]{4,6})\b\s*)?(.*)$/i.test(text)) {
+      else if (/^DE\s+([A-Za-z0-9/-]+):?(?:\s+([A-Za-z0-9]{4,6}))?(?:\s+(.*))?$/i.test(text)) {
         if (this.state.host.status !== 'on_air') return;
-        const match = text.match(/^DE\s+([A-Za-z0-9/-]+)\s+(?:([A-Za-z0-9]{4,6})\b\s*)?(.*)$/i);
+        const match = text.match(/^DE\s+([A-Za-z0-9/-]+):?(?:\s+([A-Za-z0-9]{4,6}))?(?:\s+(.*))?$/i);
         const chaserCall = match[1].toUpperCase();
         const grid = (match[2] || '').toUpperCase();
         const extra = (match[3] || '').trim();
@@ -2733,8 +2747,24 @@ class GraywolfClient {
         if (/\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra)) {
           const chaser = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === chaserCall.split('-')[0]);
           if (chaser) {
-            chaser.status = 'confirmed';
-            if (isLive) this.showToast(`✓ Chaser ${chaserCall} confirmed QSL!`, 'success');
+            if (chaser.status !== 'confirmed') {
+              chaser.status = 'confirmed';
+              this.state.host.qsos += 1;
+              this.state.host.points += 3;
+              if (isLive) this.showToast(`✓ Chaser ${chaserCall} confirmed QSL! (+3 pts)`, 'success');
+            }
+          } else {
+            this.state.host.chasers.unshift({
+              callsign: chaserCall,
+              baseCall: chaserCall.split('-')[0],
+              grid: grid || '----',
+              message: extra,
+              receivedAt: new Date().toISOString(),
+              status: 'confirmed'
+            });
+            this.state.host.qsos += 1;
+            this.state.host.points += 3;
+            if (isLive) this.showToast(`✓ Chaser ${chaserCall} confirmed QSL! (+3 pts)`, 'success');
           }
           this.renderHostHud();
           return;
@@ -3160,6 +3190,7 @@ class GraywolfClient {
           if (onAir.on_air_at) this.state.host.startedAt = Date.parse(onAir.on_air_at);
           if (onAir.expires_at) this.state.host.expiresAt = Date.parse(onAir.expires_at);
           this.renderHostHud();
+          this.reconcileChasersFromBotThread().catch(() => {});
         } else {
           // data.on_air is null or absent
           if (this.state.host.status === 'on_air') {
@@ -3174,6 +3205,74 @@ class GraywolfClient {
       }
     } catch {
       // Non-critical background status sync
+    }
+  }
+
+  async reconcileChasersFromBotThread() {
+    if (this.state.host.status !== 'on_air') return;
+    const botCall = (this.state.botCallsign || 'APRSOTA').toUpperCase();
+
+    try {
+      const res = await fetch(`/api/messages?thread_kind=dm&thread_key=${encodeURIComponent(botCall)}&limit=100`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const msgs = (data.changes || []).map(c => c.message).filter(Boolean);
+      msgs.sort((a, b) => (Date.parse(a.sent_at || a.created_at || 0) || 0) - (Date.parse(b.sent_at || b.created_at || 0) || 0));
+
+      const startedAt = this.state.host.startedAt || (Date.now() - 3600000);
+      let changed = false;
+
+      for (const m of msgs) {
+        const mTime = Date.parse(m.sent_at || m.created_at || 0) || 0;
+        if (mTime && mTime < startedAt - 60000) continue;
+        const text = (m.text || '').trim();
+
+        if (m.direction === 'in') {
+          const match = text.match(/^DE\s+([A-Za-z0-9/-]+):?(?:\s+([A-Za-z0-9]{4,6}))?(?:\s+(.*))?$/i);
+          if (match) {
+            const chaserCall = match[1].toUpperCase();
+            const grid = (match[2] || '').toUpperCase();
+            const extra = (match[3] || '').trim();
+            const baseCall = chaserCall.split('-')[0];
+            const isQsl = /\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra);
+
+            let existing = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
+            if (existing) {
+              if (isQsl && existing.status !== 'confirmed') {
+                existing.status = 'confirmed';
+                changed = true;
+              }
+            } else {
+              this.state.host.chasers.push({
+                callsign: chaserCall,
+                baseCall,
+                grid: grid && grid.length >= 4 ? grid : '----',
+                message: extra,
+                receivedAt: m.sent_at || new Date().toISOString(),
+                status: isQsl ? 'confirmed' : 'waiting'
+              });
+              changed = true;
+            }
+          }
+        } else if (m.direction === 'out') {
+          const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i) || text.match(/(?:^|\s)QSL\s+@?([A-Za-z0-9/-]+)/i);
+          if (atMatch) {
+            const targetCall = (atMatch[1] || atMatch[2]).toUpperCase();
+            const baseTarget = targetCall.split('-')[0];
+            const existing = this.state.host.chasers.find(c => c.callsign === targetCall || c.baseCall === baseTarget);
+            if (existing && existing.status !== 'confirmed') {
+              existing.status = 'confirmed';
+              changed = true;
+            }
+          }
+        }
+      }
+
+      if (changed) {
+        this.renderHostHud();
+      }
+    } catch {
+      // background reconciliation error ignored
     }
   }
 }

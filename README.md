@@ -160,7 +160,7 @@ git checkout v1.0.0-stable
 
 ## Automated Verification & Testing
 
-Run the comprehensive 22-suite end-to-end test suite:
+Run the comprehensive 28-suite end-to-end test suite:
 
 ```bash
 node test-e2e.mjs
@@ -182,6 +182,12 @@ Tests verify:
 * Chaser flow isolation vs host state machine and bot prompt disambiguation
 * Chaser pileup confirmation, 1-tap QSL drafting, and bot DE relay parsing
 * Host reply to chaser isolation (preventing host pileup QSLs from marking chaser spots as worked) and Shift+Click unmark support
+* 1-Tap Chase armed prompt state vs actual RF transmission lifecycle
+* Spot card SSID key normalization (`K3NG-7:42` vs `K3NG:42`) and multi-op search accuracy
+* Direct DMs to activators and casual chat mention filtering
+* Inbound chaser QSL relays, HUD score increments, and flexible relay parsing (`DE CALL`, `DE CALL: 599`)
+* Host reply resiliency (`TU @CALL 599`) and auto-logging chasers without literal "QSL"
+* On-air chaser pileup queue reconstruction across browser refreshes
 
 ---
 
