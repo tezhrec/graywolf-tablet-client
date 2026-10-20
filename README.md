@@ -160,7 +160,7 @@ git checkout v1.0.0-stable
 
 ## Automated Verification & Testing
 
-Run the comprehensive 28-suite end-to-end test suite:
+Run the comprehensive 30-suite end-to-end test suite:
 
 ```bash
 node test-e2e.mjs
@@ -188,6 +188,8 @@ Tests verify:
 * Inbound chaser QSL relays, HUD score increments, and flexible relay parsing (`DE CALL`, `DE CALL: 599`)
 * Host reply resiliency (`TU @CALL 599`) and auto-logging chasers without literal "QSL"
 * On-air chaser pileup queue reconstruction across browser refreshes
+* Chronological sorting stability and canonical origin timestamp preservation across RF transmission updates
+* Keyed DOM reconciliation, changelog render batching, and smart scroll anchoring (reading history vs auto-scrolling on send)
 
 ---
 

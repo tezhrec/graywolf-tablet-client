@@ -665,6 +665,8 @@ html, body {
 .message-feed {
   flex: 1;
   overflow-y: auto;
+  overflow-anchor: auto;
+  scroll-behavior: auto;
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -681,6 +683,7 @@ html, body {
   line-height: 1.4;
   word-break: break-word;
   position: relative;
+  overflow-anchor: none;
 }
 
 .message-bubble.out {

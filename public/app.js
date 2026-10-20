@@ -1088,14 +1088,14 @@ class GraywolfClient {
   }
 
   // --- Unified Message Reconciliation & State Store ---
-  applyMessageChange(change, isLive = true) {
+  applyMessageChange(change, isLive = true, shouldRender = true) {
     if (!change) return;
 
     if (change.kind === 'deleted' || change.kind === 'message.deleted') {
       const delId = change.id || (change.message && change.message.id);
       if (delId) {
-        this.state.messages = this.state.messages.filter(m => m.id !== delId);
-        this.renderMessages();
+        this.state.messages = this.state.messages.filter(m => String(m.id) !== String(delId));
+        if (shouldRender) this.renderMessages();
       }
       this.fetchConversations(false).catch(() => {});
       return;
@@ -1108,10 +1108,10 @@ class GraywolfClient {
 
     // Reconcile against existing state.messages by server ID, client_id, or msg_id
     const existingIdx = this.state.messages.findIndex(m => {
-      if (m.id && msg.id && m.id === msg.id) return true;
+      if (m.id && msg.id && String(m.id) === String(msg.id)) return true;
       const mClient = m.client_id || m.msg_id;
       const sClient = msg.msg_id || msg.client_id;
-      return mClient && sClient && mClient === sClient;
+      return mClient && sClient && String(mClient) === String(sClient);
     });
 
     if (existingIdx >= 0) {
@@ -1119,12 +1119,14 @@ class GraywolfClient {
       const oldStatus = (old.status || '').toLowerCase();
       const newStatus = (msg.status || '').toLowerCase();
 
+      // Preserve origin created_at to avoid temporal jumps when sent_at / RF timestamp arrives
       this.state.messages[existingIdx] = {
         ...old,
         ...msg,
+        created_at: old.created_at || msg.created_at,
         client_id: old.client_id || msg.msg_id || msg.client_id
       };
-      this.renderMessages();
+      if (shouldRender) this.renderMessages();
 
       // Audio & toast feedback when transition to acked is confirmed (live events only)
       if (isLive && oldStatus !== 'acked' && (newStatus === 'acked' || change.kind === 'message.acked')) {
@@ -1148,12 +1150,8 @@ class GraywolfClient {
 
       if (belongsToActive) {
         this.state.messages.push(msg);
-        this.state.messages.sort((a, b) => {
-          const ta = Date.parse(a.sent_at || a.received_at || a.created_at || 0) || 0;
-          const tb = Date.parse(b.sent_at || b.received_at || b.created_at || 0) || 0;
-          return ta - tb;
-        });
-        this.renderMessages();
+        this.sortMessages();
+        if (shouldRender) this.renderMessages();
 
         if (isLive && msg.direction === 'in') {
           this.playChirp('rx');
@@ -1261,9 +1259,11 @@ class GraywolfClient {
         if (Array.isArray(data.changes) && data.changes.length > 0) {
           // Historical messages received during initial cursor establishment do not trigger alerts
           const isLive = !isFirstSync;
-          for (const change of data.changes) {
-            this.applyMessageChange(change, isLive);
-          }
+          const count = data.changes.length;
+          data.changes.forEach((change, idx) => {
+            const isLast = idx === count - 1;
+            this.applyMessageChange(change, isLive, isLast);
+          });
         }
       }
     } catch (err) {
@@ -1380,12 +1380,102 @@ class GraywolfClient {
       this.dom.drawer.classList.add('closed');
     }
 
+    this.state.messages = [];
+    this.renderMessages(true);
     this.renderConversationList();
     this.fetchMessages(conv.thread_kind, conv.thread_key);
     this.dom.inputMessage.focus();
   }
 
   // --- Messages Feed & Actions ---
+  getMessageTimestamp(msg) {
+    if (!msg) return 0;
+    // Canonical origin time: prioritize when message was created/received over subsequent RF transmit timestamps
+    const rawTs = msg.created_at || msg.received_at || msg.sent_at;
+    if (rawTs) {
+      const parsed = Date.parse(rawTs);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    // Optimistic fallback: if id is numeric Date.now() timestamp
+    if (typeof msg.id === 'number' && msg.id > 1000000000000) {
+      return msg.id;
+    }
+    return 0;
+  }
+
+  compareMessages(a, b) {
+    const ta = this.getMessageTimestamp(a);
+    const tb = this.getMessageTimestamp(b);
+    if (ta !== tb) return ta - tb;
+
+    // Tie-breaker 1: Compare IDs if available
+    const idA = a.id !== undefined && a.id !== null ? a.id : '';
+    const idB = b.id !== undefined && b.id !== null ? b.id : '';
+    if (idA !== '' && idB !== '' && idA !== idB) {
+      const numA = Number(idA);
+      const numB = Number(idB);
+      if (!isNaN(numA) && !isNaN(numB)) {
+        return numA - numB;
+      }
+      return String(idA).localeCompare(String(idB));
+    }
+
+    // Tie-breaker 2: Inbound message before outbound reply if timestamps match
+    if (a.direction === 'in' && b.direction === 'out') return -1;
+    if (a.direction === 'out' && b.direction === 'in') return 1;
+
+    return 0;
+  }
+
+  sortMessages() {
+    this.state.messages.sort((a, b) => this.compareMessages(a, b));
+  }
+
+  getMessageKey(msg) {
+    if (!msg) return '';
+    return String(msg.id || msg.client_id || msg.msg_id || (msg.sent_at + '_' + (msg.text || '')));
+  }
+
+  renderStatusBadge(msg) {
+    if (msg.direction !== 'out') return '';
+    const status = (msg.status || 'sent').toLowerCase();
+    let label = status.toUpperCase();
+    if (status === 'acked') label = '✓✓ ACKED';
+    else if (status === 'sent') label = '✓ SENT';
+    else if (status === 'queued') label = '⏱ QUEUED';
+    else if (status === 'pending') label = '⏱ PENDING';
+    else if (status === 'failed') label = '⚠ FAILED';
+
+    return `<span class="badge-status ${status}">${label}</span>`;
+  }
+
+  createMessageBubble(msg, key) {
+    const bubble = document.createElement('div');
+    const isOut = msg.direction === 'out';
+    bubble.className = `message-bubble ${isOut ? 'out' : 'in'}`;
+    bubble.dataset.msgKey = key;
+    bubble.dataset.status = (msg.status || '').toLowerCase();
+
+    const sender = isOut ? (msg.our_call || this.state.stationCallsign) : (msg.from_call || (this.state.activeThread && this.state.activeThread.key));
+    const timeStr = this.formatTime(msg.sent_at || msg.received_at || msg.created_at);
+    const statusBadge = this.renderStatusBadge(msg);
+    const extendedBadge = (msg.extended || (msg.text && msg.text.length > 67))
+      ? '<span class="badge-extended" title="Message exceeds standard APRS 67 char limit">>67 EXT</span>'
+      : '';
+
+    bubble.innerHTML = `
+      <span class="bubble-sender">${this.escapeHtml(sender)}</span>
+      <span class="bubble-text">${this.formatMessageText(msg.text || '')}</span>
+      <div class="bubble-footer">
+        ${extendedBadge}
+        <span class="bubble-time">${timeStr}</span>
+        ${statusBadge}
+      </div>
+    `;
+
+    return bubble;
+  }
+
   async fetchMessages(kind, key) {
     try {
       const res = await fetch(`/api/messages?thread_kind=${encodeURIComponent(kind)}&thread_key=${encodeURIComponent(key)}&limit=200`);
@@ -1393,13 +1483,8 @@ class GraywolfClient {
       if (res.ok) {
         const data = await res.json();
         const serverMessages = (data.changes || []).map(c => c.message).filter(Boolean);
-        serverMessages.sort((a, b) => {
-          const ta = Date.parse(a.sent_at || a.received_at || a.created_at || 0) || 0;
-          const tb = Date.parse(b.sent_at || b.received_at || b.created_at || 0) || 0;
-          return ta - tb;
-        });
         this.state.messages = serverMessages;
-        this.renderMessages();
+        this.renderMessages(true);
 
         this.state.messages.forEach(m => {
           if (m.unread) this.markMessageRead(m.id);
@@ -1411,53 +1496,82 @@ class GraywolfClient {
     }
   }
 
-  renderMessages() {
-    this.dom.messageFeed.innerHTML = '';
+  renderMessages(forceScrollBottom = false) {
+    const feed = this.dom.messageFeed;
+    if (!feed) return;
+
+    this.sortMessages();
+
+    // Check if user is near bottom before DOM mutations
+    const threshold = 80;
+    const isAtBottom = (feed.scrollHeight - feed.scrollTop - feed.clientHeight) <= threshold;
 
     if (this.state.messages.length === 0) {
-      this.dom.messageFeed.innerHTML = '<div class="empty-state">No messages in this thread yet. Send a message below.</div>';
+      feed.innerHTML = '<div class="empty-state">No messages in this thread yet. Send a message below.</div>';
       return;
     }
 
-    this.state.messages.forEach(msg => {
-      const bubble = document.createElement('div');
-      const isOut = msg.direction === 'out';
-      bubble.className = `message-bubble ${isOut ? 'out' : 'in'}`;
+    const empty = feed.querySelector('.empty-state');
+    if (empty) empty.remove();
 
-      const sender = isOut ? (msg.our_call || this.state.stationCallsign) : (msg.from_call || this.state.activeThread.key);
-      const timeStr = this.formatTime(msg.sent_at || msg.received_at || msg.created_at);
+    // Keyed DOM reconciliation: reuse existing elements to eliminate layout jumps & flickering
+    const existingElements = new Map();
+    for (const child of Array.from(feed.children)) {
+      if (child.dataset && child.dataset.msgKey) {
+        existingElements.set(child.dataset.msgKey, child);
+      }
+    }
 
-      let statusBadge = '';
-      if (isOut) {
-        const status = (msg.status || 'sent').toLowerCase();
-        let label = status.toUpperCase();
-        if (status === 'acked') label = '✓✓ ACKED';
-        else if (status === 'sent') label = '✓ SENT';
-        else if (status === 'queued') label = '⏱ QUEUED';
-        else if (status === 'pending') label = '⏱ PENDING';
-        else if (status === 'failed') label = '⚠ FAILED';
+    const retainedKeys = new Set();
 
-        statusBadge = `<span class="badge-status ${status}">${label}</span>`;
+    this.state.messages.forEach((msg, index) => {
+      const key = this.getMessageKey(msg);
+      retainedKeys.add(key);
+
+      let bubble = existingElements.get(key);
+
+      // Check for optimistic message that transitioned to server id
+      if (!bubble && msg.client_id && existingElements.has(String(msg.client_id))) {
+        bubble = existingElements.get(String(msg.client_id));
+        bubble.dataset.msgKey = key;
+        retainedKeys.add(String(msg.client_id));
       }
 
-      const extendedBadge = (msg.extended || (msg.text && msg.text.length > 67))
-        ? '<span class="badge-extended" title="Message exceeds standard APRS 67 char limit">>67 EXT</span>'
-        : '';
+      if (bubble) {
+        // Update in-place if status or content changed
+        const currentStatus = (msg.status || '').toLowerCase();
+        if (bubble.dataset.status !== currentStatus) {
+          bubble.dataset.status = currentStatus;
+          const statusSpan = bubble.querySelector('.badge-status');
+          if (statusSpan) {
+            statusSpan.outerHTML = this.renderStatusBadge(msg);
+          } else if (msg.direction === 'out') {
+            const footer = bubble.querySelector('.bubble-footer');
+            if (footer) footer.insertAdjacentHTML('beforeend', this.renderStatusBadge(msg));
+          }
+        }
+      } else {
+        bubble = this.createMessageBubble(msg, key);
+      }
 
-      bubble.innerHTML = `
-        <span class="bubble-sender">${this.escapeHtml(sender)}</span>
-        <span class="bubble-text">${this.formatMessageText(msg.text || '')}</span>
-        <div class="bubble-footer">
-          ${extendedBadge}
-          <span class="bubble-time">${timeStr}</span>
-          ${statusBadge}
-        </div>
-      `;
-
-      this.dom.messageFeed.appendChild(bubble);
+      // Ensure bubble is at the correct sorted child position
+      const currentChildAtIndex = feed.children[index];
+      if (currentChildAtIndex !== bubble) {
+        feed.insertBefore(bubble, currentChildAtIndex || null);
+      }
     });
 
-    this.dom.messageFeed.scrollTop = this.dom.messageFeed.scrollHeight;
+    // Remove any stale DOM nodes no longer in state
+    for (const [key, el] of existingElements) {
+      if (!retainedKeys.has(key)) {
+        el.remove();
+      }
+    }
+
+    // Smart scroll management: only scroll to bottom if explicitly requested or user is already at bottom
+    if (forceScrollBottom || isAtBottom) {
+      feed.scrollTop = feed.scrollHeight;
+    }
   }
 
   formatMessageText(rawText) {
@@ -1542,6 +1656,7 @@ class GraywolfClient {
     this.updateCharMeter();
     this.playChirp('tx');
 
+    const nowIso = new Date().toISOString();
     const optimisticMsg = {
       id: Date.now(),
       client_id: clientId,
@@ -1552,7 +1667,8 @@ class GraywolfClient {
       to_call: to,
       direction: 'out',
       text,
-      sent_at: new Date().toISOString(),
+      created_at: nowIso,
+      sent_at: nowIso,
       status: 'queued',
       attempts: 1,
       extended: text.length > 67
@@ -1560,7 +1676,7 @@ class GraywolfClient {
     this.state.messages.push(optimisticMsg);
     this.processHostMessage(optimisticMsg, true);
 
-    this.renderMessages();
+    this.renderMessages(true);
 
     try {
       const res = await fetch('/api/messages', {
@@ -1572,17 +1688,18 @@ class GraywolfClient {
       if (res.ok) {
         const savedMsg = await res.json();
         const idx = this.state.messages.findIndex(m =>
-          m.id === optimisticMsg.id ||
-          (m.client_id && (savedMsg.msg_id || savedMsg.client_id) === m.client_id)
+          String(m.id) === String(optimisticMsg.id) ||
+          (m.client_id && String(savedMsg.msg_id || savedMsg.client_id) === String(m.client_id))
         );
         if (idx >= 0) {
           this.state.messages[idx] = {
             ...this.state.messages[idx],
             ...savedMsg,
+            created_at: this.state.messages[idx].created_at || savedMsg.created_at || nowIso,
             client_id: clientId,
             msg_id: savedMsg.msg_id || clientId
           };
-          this.renderMessages();
+          this.renderMessages(false);
         }
         this.fetchConversations(false).catch(() => {});
         // Trigger immediate changelog sync to catch server progression
@@ -1590,12 +1707,12 @@ class GraywolfClient {
       } else {
         const err = await res.json().catch(() => ({}));
         optimisticMsg.status = 'failed';
-        this.renderMessages();
+        this.renderMessages(false);
         this.showToast(`Send failed: ${err.error || 'Server error'}`, 'error');
       }
     } catch (err) {
       optimisticMsg.status = 'failed';
-      this.renderMessages();
+      this.renderMessages(false);
       this.showToast(`Network error: ${err.message}`, 'error');
     }
   }
