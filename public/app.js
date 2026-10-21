@@ -550,11 +550,6 @@ class GraywolfClient {
         const call = (btn.dataset.callsign || '').toUpperCase();
         const opNum = btn.dataset.opNumber;
         const opKey = btn.dataset.opKey;
-        if (e.shiftKey && btn.classList.contains('worked')) {
-          this.unmarkOpChased(opKey);
-          this.showToast(`Reset worked status for ${call}`, 'info');
-          return;
-        }
         const spot = this.state.spots.find(s => {
           const sBase = (s.callsign || '').split('-')[0].toUpperCase();
           const matchesCall = sBase === call || (s.callsign && s.callsign.toUpperCase() === call);
@@ -562,6 +557,20 @@ class GraywolfClient {
           if (opNum) return (s.number == opNum || s.op == opNum);
           return true;
         });
+
+        // Shift + Click manual toggle: works both ways (unworked -> worked, worked -> unworked)
+        if (e.shiftKey) {
+          if (btn.classList.contains('worked')) {
+            this.unmarkOpChased(opKey);
+            this.showToast(`Reset worked status for ${call}`, 'info');
+          } else {
+            const rawOpNum = spot ? (spot.number ?? spot.op ?? null) : (opNum || null);
+            this.markOpChased(opKey, { baseCall: call, opNumber: rawOpNum });
+            this.showToast(`✓ Marked ${call} as worked`, 'success');
+          }
+          return;
+        }
+
         this.handleChase(call, spot, opKey);
       }
     };
@@ -2556,9 +2565,11 @@ class GraywolfClient {
       this.renderHostHud();
     }
 
-    // Record explicit chase target and op number for auto-marking upon RF transmission
+    // Mark OP as chased/worked immediately on tap (turns button green)
     const rawOpNum = spot ? (spot.number ?? spot.op ?? null) : null;
+    const opKey = directOpKey || (rawOpNum !== null ? `${baseCall}:${rawOpNum}` : `${baseCall}:current`);
     this.state.activeChaseOpNumber = rawOpNum;
+    this.markOpChased(opKey, { baseCall, opNumber: rawOpNum });
 
     // 1. Locate or create thread with the OTA bot
     let botConv = this.state.conversations.find(c =>

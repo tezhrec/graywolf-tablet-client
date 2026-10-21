@@ -1123,7 +1123,7 @@ if (!isChased('K3NG:42')) {
 }
 console.log('✓ Standard chaser mode: Operator off-air cleanly auto-marks chased activation');
 
-console.log('\nTesting 23: Chase Button Armed State vs Actual Transmission Lifecycle');
+console.log('\nTesting 23: 1-Tap Chase Click & Shift-Click Manual Toggle Lifecycle');
 const testClientState = {
   activeChaseTarget: null,
   chaseRequestedAt: 0,
@@ -1136,12 +1136,34 @@ function simulateHandleChase(call, opNum, state) {
   state.chaseRequestedAt = Date.now();
   state.activeChaseTarget = baseCall;
   state.activeChaseOpNumber = opNum;
+  state.chasedOps[`${baseCall}:${opNum}`] = { chasedAt: new Date().toISOString() };
 }
 
+function simulateShiftClick(call, opNum, state) {
+  const baseCall = call.split('-')[0].toUpperCase();
+  const key = `${baseCall}:${opNum}`;
+  if (state.chasedOps[key]) {
+    delete state.chasedOps[key];
+  } else {
+    state.chasedOps[key] = { chasedAt: new Date().toISOString() };
+  }
+}
+
+// 1. Regular 1-Tap Chase click turns button green (marks worked)
 simulateHandleChase('W3ATV', 43, testClientState);
 if (testClientState.activeChaseTarget !== 'W3ATV') throw new Error('activeChaseTarget should be W3ATV');
-if (Boolean(testClientState.chasedOps['W3ATV:43'])) throw new Error('BUG DETECTED: 1-Tap Chase prematurely marked op worked on tap!');
-console.log('✓ Arm on tap: Tapping 1-Tap Chase arms target without premature worked status');
+if (!Boolean(testClientState.chasedOps['W3ATV:43'])) throw new Error('1-Tap Chase click failed to mark op worked on tap!');
+console.log('✓ 1-Tap Chase click: Tapping 1-Tap Chase marks OP as worked and turns button green');
+
+// 2. Shift-click to reset (turn blue)
+simulateShiftClick('W3ATV', 43, testClientState);
+if (Boolean(testClientState.chasedOps['W3ATV:43'])) throw new Error('Shift-click failed to unmark worked OP');
+console.log('✓ Shift-click unmark: Shift-clicking worked OP resets it to unworked');
+
+// 3. Shift-click to mark worked (turn green)
+simulateShiftClick('W3ATV', 43, testClientState);
+if (!Boolean(testClientState.chasedOps['W3ATV:43'])) throw new Error('Shift-click failed to mark unworked OP as worked');
+console.log('✓ Shift-click manual mark: Shift-clicking unworked OP toggles it to worked (green)');
 
 function simulateSendChaseMsg(text, toCall, state, spots) {
   const atMatch = text.match(/(?:^|\s)@([A-Za-z0-9/-]+)/i);
