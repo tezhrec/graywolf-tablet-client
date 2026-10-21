@@ -58,7 +58,9 @@ class GraywolfClient {
         beaconSentAt: null,
         endedAt: null,
         hostRequestedAt: 0,
-        chasers: []
+        chasers: [],
+        clearedChasers: new Map(),
+        reconciledFromBot: false
       },
       chaseRequestedAt: 0,
       activeChaseTarget: null
@@ -278,6 +280,7 @@ class GraywolfClient {
       chaserQueueCount: document.getElementById('chaser-queue-count'),
       chaserQueueList: document.getElementById('chaser-queue-list'),
       btnClearQslChasers: document.getElementById('btn-clear-qsl-chasers'),
+      btnClearAllChasers: document.getElementById('btn-clear-all-chasers'),
 
       // Chat Host HUD Strip
       chatHostHudStrip: document.getElementById('chat-host-hud-strip'),
@@ -348,16 +351,21 @@ class GraywolfClient {
 
     // Clear QSLed Chasers
     if (this.dom.btnClearQslChasers) {
-      this.dom.btnClearQslChasers.addEventListener('click', () => {
-        this.state.host.chasers = this.state.host.chasers.filter(c => c.status !== 'confirmed');
-        this.renderHostHud();
-        this.showToast('Cleared confirmed QSL chasers from queue', 'info');
-      });
+      this.dom.btnClearQslChasers.addEventListener('click', () => this.clearQslChasers());
+    }
+    // Clear All Chasers
+    if (this.dom.btnClearAllChasers) {
+      this.dom.btnClearAllChasers.addEventListener('click', () => this.clearAllChasers());
     }
 
-    // Delegated 1-Tap QSL on Chaser Queue
+    // Delegated 1-Tap QSL & Dismiss on Chaser Queue
     if (this.dom.chaserQueueList) {
       this.dom.chaserQueueList.addEventListener('click', (e) => {
+        const dismissBtn = e.target.closest('.btn-dismiss-chaser');
+        if (dismissBtn && dismissBtn.dataset.callsign) {
+          this.dismissChaser(dismissBtn.dataset.callsign);
+          return;
+        }
         const btn = e.target.closest('.btn-qsl-chaser');
         if (btn && btn.dataset.callsign) {
           this.qslChaser(btn.dataset.callsign);
@@ -405,6 +413,9 @@ class GraywolfClient {
         this.state.host.qsos = 0;
         this.state.host.points = 0;
         this.state.host.chasers = [];
+        this.state.host.clearedChasers.clear();
+        this.state.host.reconciledFromBot = false;
+        this.saveClearedChasers();
         this.state.host.startedAt = null;
         this.state.host.expiresAt = null;
         this.state.host.confirmedOnAirAt = null;
@@ -436,6 +447,7 @@ class GraywolfClient {
     if (this.dom.btnHostChasers) {
       this.dom.btnHostChasers.addEventListener('click', () => {
         this.sendBotCommand('CHASERS');
+        this.reconcileChasersFromBotThread().catch(() => {});
         this.showToast('Queried un-QSLed chasers from bot', 'info');
       });
     }
@@ -495,6 +507,9 @@ class GraywolfClient {
         this.state.host.status = 'ended';
         this.state.host.endedAt = Date.now();
         this.state.host.chasers = [];
+        this.state.host.clearedChasers.clear();
+        this.state.host.reconciledFromBot = false;
+        this.saveClearedChasers();
         this.renderHostHud();
         this.showToast('Ended activation with DONE', 'info');
       });
@@ -2192,6 +2207,10 @@ class GraywolfClient {
       if (rawOpNum && this.state.host.opNumber && this.state.host.opNumber !== rawOpNum) {
         console.log(`[HOST] Switched to new activation: Op #${this.state.host.opNumber} -> Op #${rawOpNum}`);
         this.state.host.chasers = [];
+        this.state.host.clearedChasers.clear();
+        this.state.host.reconciledFromBot = false;
+        this.state.host.opNumber = rawOpNum;
+        this.loadClearedChasers();
       }
 
       this.state.host.status = 'on_air';
@@ -2666,6 +2685,9 @@ class GraywolfClient {
           this.state.host.qsos = 0;
           this.state.host.points = 0;
           this.state.host.chasers = [];
+          this.state.host.clearedChasers.clear();
+          this.state.host.reconciledFromBot = false;
+          this.saveClearedChasers();
           this.state.host.startedAt = null;
           this.state.host.expiresAt = null;
           this.state.host.confirmedOnAirAt = null;
@@ -2688,6 +2710,9 @@ class GraywolfClient {
           this.state.host.hostRequestedAt = 0;
           this.state.activeChaseTarget = null;
           this.state.host.chasers = [];
+          this.state.host.clearedChasers.clear();
+          this.state.host.reconciledFromBot = false;
+          this.saveClearedChasers();
           this.renderHostHud();
         }
         return;
@@ -2859,10 +2884,22 @@ class GraywolfClient {
         const chaserCall = match[1].toUpperCase();
         const grid = (match[2] || '').toUpperCase();
         const extra = (match[3] || '').trim();
+        const baseCall = chaserCall.split('-')[0];
+        const msgTime = Date.parse(msg.sent_at || msg.created_at || 0) || Date.now();
+
+        // Check if message belongs to a previous activation
+        if (this.state.host.startedAt && msgTime < this.state.host.startedAt - 60000) {
+          return;
+        }
+
+        // If this chaser was cleared by user at or after this message timestamp, do not add
+        if (!isLive && this.isChaserCleared(chaserCall, msgTime)) {
+          return;
+        }
 
         // Check if this is a QSL confirmation relay: "DE <CHASER> QSL ..." or "DE <CHASER> <GRID> QSL ..."
         if (/\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra)) {
-          const chaser = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === chaserCall.split('-')[0]);
+          const chaser = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
           if (chaser) {
             if (chaser.status !== 'confirmed') {
               chaser.status = 'confirmed';
@@ -2873,10 +2910,10 @@ class GraywolfClient {
           } else {
             this.state.host.chasers.unshift({
               callsign: chaserCall,
-              baseCall: chaserCall.split('-')[0],
+              baseCall,
               grid: grid || '----',
               message: extra,
-              receivedAt: new Date().toISOString(),
+              receivedAt: msg.sent_at || msg.created_at || new Date().toISOString(),
               status: 'confirmed'
             });
             this.state.host.qsos += 1;
@@ -2888,19 +2925,18 @@ class GraywolfClient {
         }
 
         // New chaser check-in
-        const baseCall = chaserCall.split('-')[0];
         let existing = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
         if (existing) {
           if (grid) existing.grid = grid;
           if (extra) existing.message = extra;
-          existing.receivedAt = new Date().toISOString();
+          existing.receivedAt = msg.sent_at || msg.created_at || new Date().toISOString();
         } else {
           this.state.host.chasers.unshift({
             callsign: chaserCall,
             baseCall: baseCall,
             grid: grid || '----',
             message: extra,
-            receivedAt: new Date().toISOString(),
+            receivedAt: msg.sent_at || msg.created_at || new Date().toISOString(),
             status: 'waiting'
           });
           if (isLive) {
@@ -2925,6 +2961,9 @@ class GraywolfClient {
         this.state.host.qsos = parseInt(match[1], 10);
         this.state.host.points = parseInt(match[2], 10);
         this.state.host.chasers = [];
+        this.state.host.clearedChasers.clear();
+        this.state.host.reconciledFromBot = false;
+        this.saveClearedChasers();
         if (isLive) this.showToast(`🏁 Activation complete: ${this.state.host.qsos} QSOs, ${this.state.host.points} pts`, 'info');
         this.renderHostHud();
       }
@@ -3100,9 +3139,12 @@ class GraywolfClient {
         <div class="chaser-queue-card ${isConfirmed ? 'qsl-confirmed' : ''}">
           <div class="chaser-card-header">
             <span class="chaser-callsign">${this.escapeHtml(chaser.callsign)}</span>
-            <span class="chaser-badge ${isConfirmed ? 'confirmed' : 'waiting'}">
-              ${isConfirmed ? '✓ QSL CONFIRMED' : 'WAITING'}
-            </span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span class="chaser-badge ${isConfirmed ? 'confirmed' : 'waiting'}">
+                ${isConfirmed ? '✓ QSL CONFIRMED' : 'WAITING'}
+              </span>
+              <button type="button" class="btn-dismiss-chaser" data-callsign="${this.escapeHtml(chaser.callsign)}" title="Dismiss ${this.escapeHtml(chaser.callsign)} from queue">✕</button>
+            </div>
           </div>
           <div class="chaser-meta-row">
             <span class="chaser-grid-tag">📍 ${this.escapeHtml(chaser.grid || '----')}</span>
@@ -3229,6 +3271,102 @@ class GraywolfClient {
     }
   }
 
+  getClearedChasersStorageKey() {
+    const station = (this.state.stationCallsign || 'station').toUpperCase();
+    const op = this.state.host.opNumber || 'active';
+    return `gw_cleared_chasers_${station}_${op}`;
+  }
+
+  loadClearedChasers() {
+    try {
+      const key = this.getClearedChasersStorageKey();
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        this.state.host.clearedChasers = new Map(Object.entries(parsed));
+      }
+    } catch {}
+  }
+
+  saveClearedChasers() {
+    try {
+      const key = this.getClearedChasersStorageKey();
+      if (!this.state.host.clearedChasers || this.state.host.clearedChasers.size === 0) {
+        localStorage.removeItem(key);
+      } else {
+        const obj = Object.fromEntries(this.state.host.clearedChasers.entries());
+        localStorage.setItem(key, JSON.stringify(obj));
+      }
+    } catch {}
+  }
+
+  isChaserCleared(callsign, msgTime = null) {
+    if (!callsign || !this.state.host.clearedChasers) return false;
+    const full = callsign.toUpperCase();
+    const base = full.split('-')[0];
+    const clearedAt = this.state.host.clearedChasers.get(full) || this.state.host.clearedChasers.get(base);
+    if (!clearedAt) return false;
+    if (msgTime) {
+      return msgTime <= clearedAt;
+    }
+    return true;
+  }
+
+  dismissChaser(callsign) {
+    if (!callsign) return;
+    const now = Date.now();
+    const full = callsign.toUpperCase();
+    const base = full.split('-')[0];
+    this.state.host.clearedChasers.set(full, now);
+    this.state.host.clearedChasers.set(base, now);
+    this.state.host.chasers = this.state.host.chasers.filter(c => {
+      const cFull = (c.callsign || '').toUpperCase();
+      const cBase = (c.baseCall || cFull).split('-')[0];
+      return cFull !== full && cBase !== base;
+    });
+    this.saveClearedChasers();
+    this.renderHostHud();
+    this.showToast(`Dismissed ${callsign} from pileup queue`, 'info');
+  }
+
+  clearQslChasers() {
+    const now = Date.now();
+    const toClear = this.state.host.chasers.filter(c => c.status === 'confirmed');
+    if (toClear.length === 0) {
+      this.showToast('No confirmed QSL chasers to clear', 'info');
+      return;
+    }
+    toClear.forEach(c => {
+      const full = (c.callsign || '').toUpperCase();
+      const base = (c.baseCall || full).split('-')[0];
+      this.state.host.clearedChasers.set(full, now);
+      this.state.host.clearedChasers.set(base, now);
+    });
+    this.state.host.chasers = this.state.host.chasers.filter(c => c.status !== 'confirmed');
+    this.saveClearedChasers();
+    this.renderHostHud();
+    this.showToast(`Cleared ${toClear.length} confirmed QSL chaser(s)`, 'info');
+  }
+
+  clearAllChasers() {
+    const count = this.state.host.chasers.length;
+    if (count === 0) {
+      this.showToast('Chaser pileup queue is already empty', 'info');
+      return;
+    }
+    const now = Date.now();
+    this.state.host.chasers.forEach(c => {
+      const full = (c.callsign || '').toUpperCase();
+      const base = (c.baseCall || full).split('-')[0];
+      this.state.host.clearedChasers.set(full, now);
+      this.state.host.clearedChasers.set(base, now);
+    });
+    this.state.host.chasers = [];
+    this.saveClearedChasers();
+    this.renderHostHud();
+    this.showToast(`Cleared all ${count} chasers from pileup queue`, 'info');
+  }
+
   async sendBotCommand(text) {
     if (!this.state.isAuthenticated) {
       this.openLoginModal();
@@ -3292,6 +3430,9 @@ class GraywolfClient {
 
           if (rawOpNum && this.state.host.opNumber && this.state.host.opNumber !== rawOpNum) {
             this.state.host.chasers = [];
+            this.state.host.clearedChasers.clear();
+            this.state.host.reconciledFromBot = false;
+            this.loadClearedChasers();
           }
 
           this.state.host.status = 'on_air';
@@ -3307,7 +3448,11 @@ class GraywolfClient {
           if (onAir.on_air_at) this.state.host.startedAt = Date.parse(onAir.on_air_at);
           if (onAir.expires_at) this.state.host.expiresAt = Date.parse(onAir.expires_at);
           this.renderHostHud();
-          this.reconcileChasersFromBotThread().catch(() => {});
+          if (!this.state.host.reconciledFromBot) {
+            this.state.host.reconciledFromBot = true;
+            this.loadClearedChasers();
+            this.reconcileChasersFromBotThread().catch(() => {});
+          }
         } else {
           // data.on_air is null or absent
           if (this.state.host.status === 'on_air') {
@@ -3315,6 +3460,7 @@ class GraywolfClient {
             if (!confirmedRecently) {
               this.state.host.status = 'off';
               this.state.host.confirmedOnAirAt = null;
+              this.state.host.reconciledFromBot = false;
               this.renderHostHud();
             }
           }
@@ -3353,6 +3499,11 @@ class GraywolfClient {
             const baseCall = chaserCall.split('-')[0];
             const isQsl = /\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra);
 
+            // Skip chasers that were cleared by the operator for this message timestamp
+            if (this.isChaserCleared(chaserCall, mTime)) {
+              continue;
+            }
+
             let existing = this.state.host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
             if (existing) {
               if (isQsl && existing.status !== 'confirmed') {
@@ -3365,7 +3516,7 @@ class GraywolfClient {
                 baseCall,
                 grid: grid && grid.length >= 4 ? grid : '----',
                 message: extra,
-                receivedAt: m.sent_at || new Date().toISOString(),
+                receivedAt: m.sent_at || m.created_at || new Date().toISOString(),
                 status: isQsl ? 'confirmed' : 'waiting'
               });
               changed = true;

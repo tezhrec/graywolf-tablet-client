@@ -2099,6 +2099,12 @@ html, body {
   overflow: hidden;
 }
 
+.chaser-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .chaser-queue-list {
   flex: 1;
   overflow-y: auto;
@@ -2129,6 +2135,26 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.btn-dismiss-chaser {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-dismiss-chaser:hover, .btn-dismiss-chaser:active {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.15);
 }
 
 .chaser-callsign {

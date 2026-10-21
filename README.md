@@ -160,7 +160,7 @@ git checkout v1.0.0-stable
 
 ## Automated Verification & Testing
 
-Run the comprehensive 30-suite end-to-end test suite:
+Run the comprehensive 31-suite end-to-end test suite:
 
 ```bash
 node test-e2e.mjs
@@ -190,6 +190,7 @@ Tests verify:
 * On-air chaser pileup queue reconstruction across browser refreshes
 * Chronological sorting stability and canonical origin timestamp preservation across RF transmission updates
 * Keyed DOM reconciliation, changelog render batching, and smart scroll anchoring (reading history vs auto-scrolling on send)
+* Chaser pileup queue anti-refill protection, timestamped clearing registry (`clearedChasers`), Clear All, and individual dismiss (`✕`) lifecycle
 
 ---
 

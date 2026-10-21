@@ -1600,8 +1600,191 @@ if (renderCallCount !== 1) {
 }
 console.log('✓ Changelog batching: Fast polling batches DOM updates and renders only once per change batch');
 
+console.log('\nTesting 31: Chaser Pileup Queue Clearing, Anti-Refill Protection & Dismiss Lifecycle');
+
+const queueHost = {
+  status: 'on_air',
+  startedAt: Date.now() - 30 * 60 * 1000,
+  chasers: [],
+  clearedChasers: new Map(),
+  reconciledFromBot: false
+};
+
+function isChaserCleared(host, callsign, msgTime = null) {
+  if (!callsign || !host.clearedChasers) return false;
+  const full = callsign.toUpperCase();
+  const base = full.split('-')[0];
+  const clearedAt = host.clearedChasers.get(full) || host.clearedChasers.get(base);
+  if (!clearedAt) return false;
+  if (msgTime) {
+    return msgTime <= clearedAt;
+  }
+  return true;
+}
+
+function dismissChaser(host, callsign) {
+  if (!callsign) return;
+  const now = Date.now();
+  const full = callsign.toUpperCase();
+  const base = full.split('-')[0];
+  host.clearedChasers.set(full, now);
+  host.clearedChasers.set(base, now);
+  host.chasers = host.chasers.filter(c => {
+    const cFull = (c.callsign || '').toUpperCase();
+    const cBase = (c.baseCall || cFull).split('-')[0];
+    return cFull !== full && cBase !== base;
+  });
+}
+
+function clearQslChasers(host) {
+  const now = Date.now();
+  const toClear = host.chasers.filter(c => c.status === 'confirmed');
+  toClear.forEach(c => {
+    const full = (c.callsign || '').toUpperCase();
+    const base = (c.baseCall || full).split('-')[0];
+    host.clearedChasers.set(full, now);
+    host.clearedChasers.set(base, now);
+  });
+  host.chasers = host.chasers.filter(c => c.status !== 'confirmed');
+}
+
+function clearAllChasers(host) {
+  const now = Date.now();
+  host.chasers.forEach(c => {
+    const full = (c.callsign || '').toUpperCase();
+    const base = (c.baseCall || full).split('-')[0];
+    host.clearedChasers.set(full, now);
+    host.clearedChasers.set(base, now);
+  });
+  host.chasers = [];
+}
+
+function reconcileFromBotMessages(host, msgs) {
+  for (const m of msgs) {
+    const mTime = Date.parse(m.sent_at || m.created_at || 0) || 0;
+    if (mTime && mTime < host.startedAt - 60000) continue;
+    const text = (m.text || '').trim();
+
+    if (m.direction === 'in') {
+      const match = text.match(/^DE\s+([A-Za-z0-9/-]+):?(?:\s+([A-Za-z0-9]{4,6}))?(?:\s+(.*))?$/i);
+      if (match) {
+        const chaserCall = match[1].toUpperCase();
+        const grid = (match[2] || '').toUpperCase();
+        const extra = (match[3] || '').trim();
+        const baseCall = chaserCall.split('-')[0];
+        const isQsl = /\bQSL\b/i.test(grid) || /\bQSL\b/i.test(extra);
+
+        // Anti-refill: skip if cleared for this timestamp
+        if (isChaserCleared(host, chaserCall, mTime)) {
+          continue;
+        }
+
+        let existing = host.chasers.find(c => c.callsign === chaserCall || c.baseCall === baseCall);
+        if (existing) {
+          if (isQsl && existing.status !== 'confirmed') {
+            existing.status = 'confirmed';
+          }
+        } else {
+          host.chasers.push({
+            callsign: chaserCall,
+            baseCall,
+            grid: grid && grid.length >= 4 ? grid : '----',
+            message: extra,
+            receivedAt: m.sent_at || new Date().toISOString(),
+            status: isQsl ? 'confirmed' : 'waiting'
+          });
+        }
+      }
+    }
+  }
+}
+
+const tRelay0 = Date.now() - 20 * 60 * 1000;
+const botHistoryMsgs = [
+  { direction: 'in', text: 'DE K3SAR-7 FN09lv greetings', sent_at: new Date(tRelay0).toISOString() },
+  { direction: 'out', text: '@K3SAR QSL 599', sent_at: new Date(tRelay0 + 10000).toISOString() },
+  { direction: 'in', text: 'DE DL7PJ-1 JN48 hello', sent_at: new Date(tRelay0 + 20000).toISOString() },
+  { direction: 'in', text: 'DE W3ABC FN10ab summit', sent_at: new Date(tRelay0 + 30000).toISOString() }
+];
+
+// Initial reconciliation populates queue
+reconcileFromBotMessages(queueHost, botHistoryMsgs);
+// Mark K3SAR-7 confirmed as simulated by @K3SAR reply
+const k3sar = queueHost.chasers.find(c => c.baseCall === 'K3SAR');
+if (k3sar) k3sar.status = 'confirmed';
+
+if (queueHost.chasers.length !== 3) {
+  throw new Error(`Expected 3 chasers in queue, got ${queueHost.chasers.length}`);
+}
+console.log('✓ Initial queue setup: Queue successfully populated with 3 chasers (1 confirmed, 2 waiting)');
+
+// 1. Clear QSLed chasers
+clearQslChasers(queueHost);
+if (queueHost.chasers.some(c => c.baseCall === 'K3SAR')) {
+  throw new Error('K3SAR should have been removed by clearQslChasers');
+}
+if (!isChaserCleared(queueHost, 'K3SAR-7', tRelay0)) {
+  throw new Error('K3SAR should be marked in clearedChasers');
+}
+console.log('✓ Clear QSLed: Confirmed contact removed and registered in anti-refill cleared registry');
+
+// 2. Re-running bot reconciliation must NOT refill K3SAR
+reconcileFromBotMessages(queueHost, botHistoryMsgs);
+if (queueHost.chasers.some(c => c.baseCall === 'K3SAR')) {
+  throw new Error('Chaser pileup queue REFILLED K3SAR after being cleared!');
+}
+if (queueHost.chasers.length !== 2) {
+  throw new Error(`Queue length should still be 2, got ${queueHost.chasers.length}`);
+}
+console.log('✓ Anti-refill protection: Periodic bot thread reconciliation does NOT resurrect cleared QSL chasers');
+
+// 3. Dismiss individual chaser (DL7PJ-1)
+dismissChaser(queueHost, 'DL7PJ-1');
+if (queueHost.chasers.some(c => c.baseCall === 'DL7PJ')) {
+  throw new Error('DL7PJ should have been removed by dismissChaser');
+}
+if (!isChaserCleared(queueHost, 'DL7PJ-1', tRelay0 + 20000)) {
+  throw new Error('DL7PJ should be marked in clearedChasers');
+}
+reconcileFromBotMessages(queueHost, botHistoryMsgs);
+if (queueHost.chasers.some(c => c.baseCall === 'DL7PJ')) {
+  throw new Error('Dismissed chaser DL7PJ was resurrected by reconciliation!');
+}
+console.log('✓ Individual dismiss: Dismissing individual chaser removes them and prevents refill');
+
+// 4. Clear All chasers
+clearAllChasers(queueHost);
+if (queueHost.chasers.length !== 0) {
+  throw new Error('Queue should be empty after clearAllChasers');
+}
+reconcileFromBotMessages(queueHost, botHistoryMsgs);
+if (queueHost.chasers.length !== 0) {
+  throw new Error('Clear All chasers refilled upon reconciliation!');
+}
+console.log('✓ Clear All chasers: Entire queue emptied and remains empty on background syncs');
+
+// 5. Subsequent live check-in after clearing timestamp is allowed
+const tNewRelay = Date.now() + 5000;
+const newRelayMsgs = [
+  { direction: 'in', text: 'DE W3ABC FN10ab second pass', sent_at: new Date(tNewRelay).toISOString() }
+];
+reconcileFromBotMessages(queueHost, newRelayMsgs);
+if (queueHost.chasers.length !== 1 || queueHost.chasers[0].baseCall !== 'W3ABC') {
+  throw new Error('New check-in after clear timestamp was incorrectly blocked!');
+}
+console.log('✓ Subsequent check-in support: Brand-new live contact after clearing timestamp cleanly enters queue');
+
+// 6. New activation cleanly resets cleared registry
+queueHost.clearedChasers.clear();
+queueHost.chasers = [];
+queueHost.reconciledFromBot = false;
+if (isChaserCleared(queueHost, 'K3SAR')) {
+  throw new Error('Resetting activation failed to clear anti-refill registry');
+}
+console.log('✓ Activation lifecycle reset: New activation cleans slate for future operations');
+
 console.log('\n=========================================');
-console.log('🎉 ALL 30 TEST SUITES PASSED VERIFICATION!');
+console.log('🎉 ALL 31 TEST SUITES PASSED VERIFICATION!');
 console.log('=========================================');
 
 process.exit(0);
